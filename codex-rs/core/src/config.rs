@@ -2186,9 +2186,7 @@ X-Auth = "DOCS_AUTH"
 
         write_global_mcp_servers(codex_home.path(), &servers)?;
         let serialized_with_optional = std::fs::read_to_string(&config_path)?;
-        assert!(serialized_with_optional.contains(
-            "bearer_token_env_var = \"MCP_TOKEN\""
-        ));
+        assert!(serialized_with_optional.contains("bearer_token_env_var = \"MCP_TOKEN\""));
         assert!(serialized_with_optional.contains("[mcp_servers.docs.http_headers]"));
         assert!(serialized_with_optional.contains("[mcp_servers.docs.env_http_headers]"));
 

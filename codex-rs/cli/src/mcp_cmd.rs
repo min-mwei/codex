@@ -503,8 +503,6 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
             McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token_env_var,
-                
-                
                 ..
             } => {
                 let token_display = bearer_token_env_var
