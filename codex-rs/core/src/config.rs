@@ -7,6 +7,7 @@ use crate::config_types::DEFAULT_OTEL_ENVIRONMENT;
 use crate::config_types::History;
 use crate::config_types::McpServerConfig;
 use crate::config_types::McpServerTransportConfig;
+use crate::config_types::Notice;
 use crate::config_types::Notifications;
 use crate::config_types::OtelConfig;
 use crate::config_types::OtelConfigToml;
@@ -237,6 +238,9 @@ pub struct Config {
     /// Tracks whether the Windows onboarding screen has been acknowledged.
     pub windows_wsl_setup_acknowledged: bool,
 
+    /// Collection of various notices we show the user
+    pub notices: Notice,
+
     /// When true, disables burst-paste detection for typed input entirely.
     /// All characters are inserted as they are received, and no buffering
     /// or placeholder replacement will occur for fast keypress bursts.
@@ -356,7 +360,13 @@ pub fn write_global_mcp_servers(
             let mut entry = TomlTable::new();
             entry.set_implicit(false);
             match &config.transport {
-                McpServerTransportConfig::Stdio { command, args, env } => {
+                McpServerTransportConfig::Stdio {
+                    command,
+                    args,
+                    env,
+                    env_vars,
+                    cwd,
+                } => {
                     entry["command"] = toml_edit::value(command.clone());
 
                     if !args.is_empty() {
@@ -379,18 +389,52 @@ pub fn write_global_mcp_servers(
                         }
                         entry["env"] = TomlItem::Table(env_table);
                     }
+
+                    if !env_vars.is_empty() {
+                        entry["env_vars"] =
+                            TomlItem::Value(env_vars.iter().collect::<TomlArray>().into());
+                    }
+
+                    if let Some(cwd) = cwd {
+                        entry["cwd"] = toml_edit::value(cwd.to_string_lossy().to_string());
+                    }
                 }
                 McpServerTransportConfig::StreamableHttp {
                     url,
-                    bearer_token,
                     bearer_token_env_var,
+                    http_headers,
+                    env_http_headers,
                 } => {
                     entry["url"] = toml_edit::value(url.clone());
-                    if let Some(token) = bearer_token {
-                        entry["bearer_token"] = toml_edit::value(token.clone());
-                    }
                     if let Some(env_var) = bearer_token_env_var {
                         entry["bearer_token_env_var"] = toml_edit::value(env_var.clone());
+                    } else {
+                        entry.remove("bearer_token_env_var");
+                    }
+                    entry.remove("bearer_token");
+                    if let Some(headers) = http_headers
+                        && !headers.is_empty()
+                    {
+                        let mut table = TomlTable::new();
+                        table.set_implicit(false);
+                        let mut pairs: Vec<_> = headers.iter().collect();
+                        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                        for (key, value) in pairs {
+                            table.insert(key, toml_edit::value(value.clone()));
+                        }
+                        entry["http_headers"] = TomlItem::Table(table);
+                    }
+                    if let Some(headers) = env_http_headers
+                        && !headers.is_empty()
+                    {
+                        let mut table = TomlTable::new();
+                        table.set_implicit(false);
+                        let mut pairs: Vec<_> = headers.iter().collect();
+                        pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
+                        for (key, value) in pairs {
+                            table.insert(key, toml_edit::value(value.clone()));
+                        }
+                        entry["env_http_headers"] = TomlItem::Table(table);
                     }
                 }
             }
@@ -531,6 +575,54 @@ pub fn set_windows_wsl_setup_acknowledged(
     tmp_file.persist(config_path)?;
 
     Ok(())
+}
+
+/// Persist the acknowledgement flag for the full access warning prompt.
+pub fn set_hide_full_access_warning(codex_home: &Path, acknowledged: bool) -> anyhow::Result<()> {
+    let config_path = codex_home.join(CONFIG_TOML_FILE);
+    let mut doc = match std::fs::read_to_string(config_path.clone()) {
+        Ok(s) => s.parse::<DocumentMut>()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => DocumentMut::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    let notices_table = load_or_create_top_level_table(&mut doc, Notice::TABLE_KEY)?;
+
+    notices_table["hide_full_access_warning"] = toml_edit::value(acknowledged);
+
+    std::fs::create_dir_all(codex_home)?;
+    let tmp_file = NamedTempFile::new_in(codex_home)?;
+    std::fs::write(tmp_file.path(), doc.to_string())?;
+    tmp_file.persist(config_path)?;
+
+    Ok(())
+}
+
+fn load_or_create_top_level_table<'a>(
+    doc: &'a mut DocumentMut,
+    key: &str,
+) -> anyhow::Result<&'a mut toml_edit::Table> {
+    let mut created_table = false;
+
+    let root = doc.as_table_mut();
+    let needs_table =
+        !root.contains_key(key) || root.get(key).and_then(|item| item.as_table()).is_none();
+    if needs_table {
+        root.insert(key, toml_edit::table());
+        created_table = true;
+    }
+
+    let Some(table) = doc[key].as_table_mut() else {
+        return Err(anyhow::anyhow!(format!(
+            "table [{key}] missing after initialization"
+        )));
+    };
+
+    if created_table {
+        table.set_implicit(true);
+    }
+
+    Ok(table)
 }
 
 fn ensure_profile_table<'a>(
@@ -806,6 +898,10 @@ pub struct ConfigToml {
 
     /// Tracks whether the Windows onboarding screen has been acknowledged.
     pub windows_wsl_setup_acknowledged: Option<bool>,
+
+    /// Collection of in-product notices (different from notifications)
+    /// See [`crate::config_types::Notices`] for more details
+    pub notice: Option<Notice>,
 
     /// Legacy, now use features
     pub experimental_instructions_file: Option<PathBuf>,
@@ -1220,6 +1316,7 @@ impl Config {
             active_profile: active_profile_name,
             active_project,
             windows_wsl_setup_acknowledged: cfg.windows_wsl_setup_acknowledged.unwrap_or(false),
+            notices: cfg.notice.unwrap_or_default(),
             disable_paste_burst: cfg.disable_paste_burst.unwrap_or(false),
             tui_notifications: cfg
                 .tui
@@ -1696,6 +1793,8 @@ approve_all = true
                     command: "echo".to_string(),
                     args: vec!["hello".to_string()],
                     env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
                 },
                 enabled: true,
                 startup_timeout_sec: Some(Duration::from_secs(3)),
@@ -1709,10 +1808,18 @@ approve_all = true
         assert_eq!(loaded.len(), 1);
         let docs = loaded.get("docs").expect("docs entry");
         match &docs.transport {
-            McpServerTransportConfig::Stdio { command, args, env } => {
+            McpServerTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+                cwd,
+            } => {
                 assert_eq!(command, "echo");
                 assert_eq!(args, &vec!["hello".to_string()]);
                 assert!(env.is_none());
+                assert!(env_vars.is_empty());
+                assert!(cwd.is_none());
             }
             other => panic!("unexpected transport {other:?}"),
         }
@@ -1797,6 +1904,8 @@ startup_timeout_ms = 2500
                         ("ZIG_VAR".to_string(), "3".to_string()),
                         ("ALPHA_VAR".to_string(), "1".to_string()),
                     ])),
+                    env_vars: Vec::new(),
+                    cwd: None,
                 },
                 enabled: true,
                 startup_timeout_sec: None,
@@ -1823,7 +1932,13 @@ ZIG_VAR = "3"
         let loaded = load_global_mcp_servers(codex_home.path()).await?;
         let docs = loaded.get("docs").expect("docs entry");
         match &docs.transport {
-            McpServerTransportConfig::Stdio { command, args, env } => {
+            McpServerTransportConfig::Stdio {
+                command,
+                args,
+                env,
+                env_vars,
+                cwd,
+            } => {
                 assert_eq!(command, "docs-server");
                 assert_eq!(args, &vec!["--verbose".to_string()]);
                 let env = env
@@ -1831,6 +1946,8 @@ ZIG_VAR = "3"
                     .expect("env should be preserved for stdio transport");
                 assert_eq!(env.get("ALPHA_VAR"), Some(&"1".to_string()));
                 assert_eq!(env.get("ZIG_VAR"), Some(&"3".to_string()));
+                assert!(env_vars.is_empty());
+                assert!(cwd.is_none());
             }
             other => panic!("unexpected transport {other:?}"),
         }
@@ -1839,16 +1956,101 @@ ZIG_VAR = "3"
     }
 
     #[tokio::test]
-    async fn write_global_mcp_servers_serializes_streamable_http() -> anyhow::Result<()> {
+    async fn write_global_mcp_servers_serializes_env_vars() -> anyhow::Result<()> {
         let codex_home = TempDir::new()?;
 
-        let mut servers = BTreeMap::from([(
+        let servers = BTreeMap::from([(
+            "docs".to_string(),
+            McpServerConfig {
+                transport: McpServerTransportConfig::Stdio {
+                    command: "docs-server".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                    env_vars: vec!["ALPHA".to_string(), "BETA".to_string()],
+                    cwd: None,
+                },
+                enabled: true,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+            },
+        )]);
+
+        write_global_mcp_servers(codex_home.path(), &servers)?;
+
+        let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+        let serialized = std::fs::read_to_string(&config_path)?;
+        assert!(
+            serialized.contains(r#"env_vars = ["ALPHA", "BETA"]"#),
+            "serialized config missing env_vars field:\n{serialized}"
+        );
+
+        let loaded = load_global_mcp_servers(codex_home.path()).await?;
+        let docs = loaded.get("docs").expect("docs entry");
+        match &docs.transport {
+            McpServerTransportConfig::Stdio { env_vars, .. } => {
+                assert_eq!(env_vars, &vec!["ALPHA".to_string(), "BETA".to_string()]);
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_global_mcp_servers_serializes_cwd() -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let cwd_path = PathBuf::from("/tmp/codex-mcp");
+        let servers = BTreeMap::from([(
+            "docs".to_string(),
+            McpServerConfig {
+                transport: McpServerTransportConfig::Stdio {
+                    command: "docs-server".to_string(),
+                    args: Vec::new(),
+                    env: None,
+                    env_vars: Vec::new(),
+                    cwd: Some(cwd_path.clone()),
+                },
+                enabled: true,
+                startup_timeout_sec: None,
+                tool_timeout_sec: None,
+            },
+        )]);
+
+        write_global_mcp_servers(codex_home.path(), &servers)?;
+
+        let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+        let serialized = std::fs::read_to_string(&config_path)?;
+        assert!(
+            serialized.contains(r#"cwd = "/tmp/codex-mcp""#),
+            "serialized config missing cwd field:\n{serialized}"
+        );
+
+        let loaded = load_global_mcp_servers(codex_home.path()).await?;
+        let docs = loaded.get("docs").expect("docs entry");
+        match &docs.transport {
+            McpServerTransportConfig::Stdio { cwd, .. } => {
+                assert_eq!(cwd.as_deref(), Some(Path::new("/tmp/codex-mcp")));
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_global_mcp_servers_streamable_http_serializes_bearer_token() -> anyhow::Result<()>
+    {
+        let codex_home = TempDir::new()?;
+
+        let servers = BTreeMap::from([(
             "docs".to_string(),
             McpServerConfig {
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: "https://example.com/mcp".to_string(),
-                    bearer_token: Some("secret-token".to_string()),
-                    bearer_token_env_var: None,
+                    bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                    http_headers: None,
+                    env_http_headers: None,
                 },
                 enabled: true,
                 startup_timeout_sec: Some(Duration::from_secs(2)),
@@ -1864,7 +2066,7 @@ ZIG_VAR = "3"
             serialized,
             r#"[mcp_servers.docs]
 url = "https://example.com/mcp"
-bearer_token = "secret-token"
+bearer_token_env_var = "MCP_TOKEN"
 startup_timeout_sec = 2.0
 "#
         );
@@ -1874,25 +2076,130 @@ startup_timeout_sec = 2.0
         match &docs.transport {
             McpServerTransportConfig::StreamableHttp {
                 url,
-                bearer_token,
                 bearer_token_env_var,
-                ..
+                http_headers,
+                env_http_headers,
             } => {
                 assert_eq!(url, "https://example.com/mcp");
-                assert_eq!(bearer_token.as_deref(), Some("secret-token"));
-                assert!(bearer_token_env_var.is_none());
+                assert_eq!(bearer_token_env_var.as_deref(), Some("MCP_TOKEN"));
+                assert!(http_headers.is_none());
+                assert!(env_http_headers.is_none());
             }
             other => panic!("unexpected transport {other:?}"),
         }
         assert_eq!(docs.startup_timeout_sec, Some(Duration::from_secs(2)));
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_global_mcp_servers_streamable_http_serializes_custom_headers()
+    -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let servers = BTreeMap::from([(
+            "docs".to_string(),
+            McpServerConfig {
+                transport: McpServerTransportConfig::StreamableHttp {
+                    url: "https://example.com/mcp".to_string(),
+                    bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                    http_headers: Some(HashMap::from([("X-Doc".to_string(), "42".to_string())])),
+                    env_http_headers: Some(HashMap::from([(
+                        "X-Auth".to_string(),
+                        "DOCS_AUTH".to_string(),
+                    )])),
+                },
+                enabled: true,
+                startup_timeout_sec: Some(Duration::from_secs(2)),
+                tool_timeout_sec: None,
+            },
+        )]);
+        write_global_mcp_servers(codex_home.path(), &servers)?;
+
+        let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+        let serialized = std::fs::read_to_string(&config_path)?;
+        assert_eq!(
+            serialized,
+            r#"[mcp_servers.docs]
+url = "https://example.com/mcp"
+bearer_token_env_var = "MCP_TOKEN"
+startup_timeout_sec = 2.0
+
+[mcp_servers.docs.http_headers]
+X-Doc = "42"
+
+[mcp_servers.docs.env_http_headers]
+X-Auth = "DOCS_AUTH"
+"#
+        );
+
+        let loaded = load_global_mcp_servers(codex_home.path()).await?;
+        let docs = loaded.get("docs").expect("docs entry");
+        match &docs.transport {
+            McpServerTransportConfig::StreamableHttp {
+                http_headers,
+                env_http_headers,
+                ..
+            } => {
+                assert_eq!(
+                    http_headers,
+                    &Some(HashMap::from([("X-Doc".to_string(), "42".to_string())])),
+                );
+                assert_eq!(
+                    env_http_headers,
+                    &Some(HashMap::from([(
+                        "X-Auth".to_string(),
+                        "DOCS_AUTH".to_string()
+                    )])),
+                );
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_global_mcp_servers_streamable_http_removes_optional_sections()
+    -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+
+        let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+
+        let mut servers = BTreeMap::from([(
+            "docs".to_string(),
+            McpServerConfig {
+                transport: McpServerTransportConfig::StreamableHttp {
+                    url: "https://example.com/mcp".to_string(),
+                    bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                    http_headers: Some(HashMap::from([("X-Doc".to_string(), "42".to_string())])),
+                    env_http_headers: Some(HashMap::from([(
+                        "X-Auth".to_string(),
+                        "DOCS_AUTH".to_string(),
+                    )])),
+                },
+                enabled: true,
+                startup_timeout_sec: Some(Duration::from_secs(2)),
+                tool_timeout_sec: None,
+            },
+        )]);
+
+        write_global_mcp_servers(codex_home.path(), &servers)?;
+        let serialized_with_optional = std::fs::read_to_string(&config_path)?;
+        assert!(serialized_with_optional.contains(
+            "bearer_token_env_var = \"MCP_TOKEN\""
+        ));
+        assert!(serialized_with_optional.contains("[mcp_servers.docs.http_headers]"));
+        assert!(serialized_with_optional.contains("[mcp_servers.docs.env_http_headers]"));
 
         servers.insert(
             "docs".to_string(),
             McpServerConfig {
                 transport: McpServerTransportConfig::StreamableHttp {
                     url: "https://example.com/mcp".to_string(),
-                    bearer_token: None,
-                    bearer_token_env_var: Some("TOKEN_VAR".to_string()),
+                    bearer_token_env_var: None,
+                    http_headers: None,
+                    env_http_headers: None,
                 },
                 enabled: true,
                 startup_timeout_sec: None,
@@ -1906,7 +2213,6 @@ startup_timeout_sec = 2.0
             serialized,
             r#"[mcp_servers.docs]
 url = "https://example.com/mcp"
-bearer_token_env_var = "TOKEN_VAR"
 "#
         );
 
@@ -1915,20 +2221,119 @@ bearer_token_env_var = "TOKEN_VAR"
         match &docs.transport {
             McpServerTransportConfig::StreamableHttp {
                 url,
-                bearer_token,
                 bearer_token_env_var,
-                ..
+                http_headers,
+                env_http_headers,
             } => {
                 assert_eq!(url, "https://example.com/mcp");
-                assert!(bearer_token.is_none());
-                assert_eq!(bearer_token_env_var.as_deref(), Some("TOKEN_VAR"));
+                assert!(bearer_token_env_var.is_none());
+                assert!(http_headers.is_none());
+                assert!(env_http_headers.is_none());
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+
+        assert!(docs.startup_timeout_sec.is_none());
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn write_global_mcp_servers_streamable_http_isolates_headers_between_servers()
+    -> anyhow::Result<()> {
+        let codex_home = TempDir::new()?;
+        let config_path = codex_home.path().join(CONFIG_TOML_FILE);
+
+        let servers = BTreeMap::from([
+            (
+                "docs".to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::StreamableHttp {
+                        url: "https://example.com/mcp".to_string(),
+                        bearer_token_env_var: Some("MCP_TOKEN".to_string()),
+                        http_headers: Some(HashMap::from([(
+                            "X-Doc".to_string(),
+                            "42".to_string(),
+                        )])),
+                        env_http_headers: Some(HashMap::from([(
+                            "X-Auth".to_string(),
+                            "DOCS_AUTH".to_string(),
+                        )])),
+                    },
+                    enabled: true,
+                    startup_timeout_sec: Some(Duration::from_secs(2)),
+                    tool_timeout_sec: None,
+                },
+            ),
+            (
+                "logs".to_string(),
+                McpServerConfig {
+                    transport: McpServerTransportConfig::Stdio {
+                        command: "logs-server".to_string(),
+                        args: vec!["--follow".to_string()],
+                        env: None,
+                        env_vars: Vec::new(),
+                        cwd: None,
+                    },
+                    enabled: true,
+                    startup_timeout_sec: None,
+                    tool_timeout_sec: None,
+                },
+            ),
+        ]);
+
+        write_global_mcp_servers(codex_home.path(), &servers)?;
+
+        let serialized = std::fs::read_to_string(&config_path)?;
+        assert!(
+            serialized.contains("[mcp_servers.docs.http_headers]"),
+            "serialized config missing docs headers section\n{serialized}"
+        );
+        assert!(
+            !serialized.contains("[mcp_servers.logs.http_headers]"),
+            "serialized config should not add logs headers section\n{serialized}"
+        );
+        assert!(
+            !serialized.contains("[mcp_servers.logs.env_http_headers]"),
+            "serialized config should not add logs env headers section\n{serialized}"
+        );
+        assert!(
+            !serialized.contains("mcp_servers.logs.bearer_token_env_var"),
+            "serialized config should not add bearer token to logs\n{serialized}"
+        );
+
+        let loaded = load_global_mcp_servers(codex_home.path()).await?;
+        let docs = loaded.get("docs").expect("docs entry");
+        match &docs.transport {
+            McpServerTransportConfig::StreamableHttp {
+                http_headers,
+                env_http_headers,
+                ..
+            } => {
+                assert_eq!(
+                    http_headers,
+                    &Some(HashMap::from([("X-Doc".to_string(), "42".to_string())])),
+                );
+                assert_eq!(
+                    env_http_headers,
+                    &Some(HashMap::from([(
+                        "X-Auth".to_string(),
+                        "DOCS_AUTH".to_string()
+                    )])),
+                );
+            }
+            other => panic!("unexpected transport {other:?}"),
+        }
+        let logs = loaded.get("logs").expect("logs entry");
+        match &logs.transport {
+            McpServerTransportConfig::Stdio { env, .. } => {
+                assert!(env.is_none());
             }
             other => panic!("unexpected transport {other:?}"),
         }
 
         Ok(())
     }
-
     #[tokio::test]
     async fn write_global_mcp_servers_serializes_disabled_flag() -> anyhow::Result<()> {
         let codex_home = TempDir::new()?;
@@ -1940,6 +2345,8 @@ bearer_token_env_var = "TOKEN_VAR"
                     command: "docs-server".to_string(),
                     args: Vec::new(),
                     env: None,
+                    env_vars: Vec::new(),
+                    cwd: None,
                 },
                 enabled: false,
                 startup_timeout_sec: None,
@@ -2287,6 +2694,7 @@ model_verbosity = "high"
                 active_profile: Some("o3".to_string()),
                 active_project: ProjectConfig { trust_level: None },
                 windows_wsl_setup_acknowledged: false,
+                notices: Default::default(),
                 disable_paste_burst: false,
                 tui_notifications: Default::default(),
                 otel: OtelConfig::default(),
@@ -2353,6 +2761,7 @@ model_verbosity = "high"
             active_profile: Some("gpt3".to_string()),
             active_project: ProjectConfig { trust_level: None },
             windows_wsl_setup_acknowledged: false,
+            notices: Default::default(),
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             otel: OtelConfig::default(),
@@ -2434,6 +2843,7 @@ model_verbosity = "high"
             active_profile: Some("zdr".to_string()),
             active_project: ProjectConfig { trust_level: None },
             windows_wsl_setup_acknowledged: false,
+            notices: Default::default(),
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             otel: OtelConfig::default(),
@@ -2501,6 +2911,7 @@ model_verbosity = "high"
             active_profile: Some("gpt5".to_string()),
             active_project: ProjectConfig { trust_level: None },
             windows_wsl_setup_acknowledged: false,
+            notices: Default::default(),
             disable_paste_burst: false,
             tui_notifications: Default::default(),
             otel: OtelConfig::default(),

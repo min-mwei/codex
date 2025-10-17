@@ -44,16 +44,16 @@ async fn compute_auth_status(
         McpServerTransportConfig::Stdio { .. } => Ok(McpAuthStatus::Unsupported),
         McpServerTransportConfig::StreamableHttp {
             url,
-            bearer_token,
             bearer_token_env_var,
+            http_headers,
+            env_http_headers,
         } => {
-            if bearer_token.is_some() {
-                return Ok(McpAuthStatus::BearerToken);
-            }
             determine_streamable_http_auth_status(
                 server_name,
                 url,
                 bearer_token_env_var.as_deref(),
+                http_headers.clone(),
+                env_http_headers.clone(),
                 store_mode,
             )
             .await

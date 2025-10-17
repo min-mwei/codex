@@ -28,10 +28,18 @@ async fn add_and_remove_server_updates_global_config() -> Result<()> {
     assert_eq!(servers.len(), 1);
     let docs = servers.get("docs").expect("server should exist");
     match &docs.transport {
-        McpServerTransportConfig::Stdio { command, args, env } => {
+        McpServerTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            env_vars,
+            cwd,
+        } => {
             assert_eq!(command, "echo");
             assert_eq!(args, &vec!["hello".to_string()]);
             assert!(env.is_none());
+            assert!(env_vars.is_empty());
+            assert!(cwd.is_none());
         }
         other => panic!("unexpected transport: {other:?}"),
     }
@@ -111,12 +119,14 @@ async fn add_streamable_http_without_manual_token() -> Result<()> {
     match &github.transport {
         McpServerTransportConfig::StreamableHttp {
             url,
-            bearer_token,
             bearer_token_env_var,
+            http_headers,
+            env_http_headers,
         } => {
             assert_eq!(url, "https://example.com/mcp");
-            assert!(bearer_token.is_none());
             assert!(bearer_token_env_var.is_none());
+            assert!(http_headers.is_none());
+            assert!(env_http_headers.is_none());
         }
         other => panic!("unexpected transport: {other:?}"),
     }
@@ -151,12 +161,14 @@ async fn add_streamable_http_with_custom_env_var() -> Result<()> {
     match &issues.transport {
         McpServerTransportConfig::StreamableHttp {
             url,
-            bearer_token,
             bearer_token_env_var,
+            http_headers,
+            env_http_headers,
         } => {
             assert_eq!(url, "https://example.com/issues");
-            assert!(bearer_token.is_none());
             assert_eq!(bearer_token_env_var.as_deref(), Some("GITHUB_TOKEN"));
+            assert!(http_headers.is_none());
+            assert!(env_http_headers.is_none());
         }
         other => panic!("unexpected transport: {other:?}"),
     }
