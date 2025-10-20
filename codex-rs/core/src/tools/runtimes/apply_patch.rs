@@ -163,7 +163,7 @@ fn run_apply_patch_in_process(req: &ApplyPatchRequest) -> Result<ExecToolCallOut
     static APPLY_PATCH_CWD_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
     let _lock = APPLY_PATCH_CWD_GUARD
         .lock()
-        .expect("apply_patch cwd guard should not be poisoned");
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let cwd_guard = WorkingDirGuard::change_to(&req.cwd).map_err(|err| {
         ToolError::Rejected(format!("failed to change to {}: {err}", req.cwd.display()))

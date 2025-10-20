@@ -253,6 +253,8 @@ async fn run_add(config_overrides: &CliConfigOverrides, add_args: AddArgs) -> Re
         enabled: true,
         startup_timeout_sec: None,
         tool_timeout_sec: None,
+        enabled_tools: None,
+        disabled_tools: None,
     };
 
     servers.insert(name.clone(), new_entry);
@@ -505,9 +507,6 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
                 bearer_token_env_var,
                 ..
             } => {
-                let token_display = bearer_token_env_var
-                    .clone()
-                    .unwrap_or_else(|| "-".to_string());
                 let status = if cfg.enabled {
                     "enabled".to_string()
                 } else {
@@ -521,7 +520,7 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
                 http_rows.push([
                     name.clone(),
                     url.clone(),
-                    token_display,
+                    bearer_token_env_var.clone().unwrap_or("-".to_string()),
                     status,
                     auth_status,
                 ]);
@@ -589,11 +588,10 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
     }
 
     if !http_rows.is_empty() {
-        let token_header = "Bearer Token Env Var";
         let mut widths = [
             "Name".len(),
             "Url".len(),
-            token_header.len(),
+            "Bearer Token Env Var".len(),
             "Status".len(),
             "Auth".len(),
         ];
@@ -607,7 +605,7 @@ async fn run_list(config_overrides: &CliConfigOverrides, list_args: ListArgs) ->
             "{name:<name_w$}  {url:<url_w$}  {token:<token_w$}  {status:<status_w$}  {auth:<auth_w$}",
             name = "Name",
             url = "Url",
-            token = token_header,
+            token = "Bearer Token Env Var",
             status = "Status",
             auth = "Auth",
             name_w = widths[0],
@@ -680,6 +678,8 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
             "name": get_args.name,
             "enabled": server.enabled,
             "transport": transport,
+            "enabled_tools": server.enabled_tools.clone(),
+            "disabled_tools": server.disabled_tools.clone(),
             "startup_timeout_sec": server
                 .startup_timeout_sec
                 .map(|timeout| timeout.as_secs_f64()),
@@ -691,8 +691,28 @@ async fn run_get(config_overrides: &CliConfigOverrides, get_args: GetArgs) -> Re
         return Ok(());
     }
 
+    if !server.enabled {
+        println!("{} (disabled)", get_args.name);
+        return Ok(());
+    }
+
     println!("{}", get_args.name);
     println!("  enabled: {}", server.enabled);
+    let format_tool_list = |tools: &Option<Vec<String>>| -> String {
+        match tools {
+            Some(list) if list.is_empty() => "[]".to_string(),
+            Some(list) => list.join(", "),
+            None => "-".to_string(),
+        }
+    };
+    if server.enabled_tools.is_some() {
+        let enabled_tools_display = format_tool_list(&server.enabled_tools);
+        println!("  enabled_tools: {enabled_tools_display}");
+    }
+    if server.disabled_tools.is_some() {
+        let disabled_tools_display = format_tool_list(&server.disabled_tools);
+        println!("  disabled_tools: {disabled_tools_display}");
+    }
     match &server.transport {
         McpServerTransportConfig::Stdio {
             command,

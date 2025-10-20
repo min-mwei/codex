@@ -19,7 +19,7 @@ use codex_exec::Cli as ExecCli;
 use codex_responses_api_proxy::Args as ResponsesApiProxyArgs;
 use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
-use codex_tui::UpdateAction;
+use codex_tui::updates::UpdateAction;
 use owo_colors::OwoColorize;
 use std::path::PathBuf;
 use supports_color::Stream;
@@ -74,8 +74,8 @@ enum Subcommand {
     /// [experimental] Run Codex as an MCP server and manage MCP servers.
     Mcp(McpCli),
 
-    /// [experimental] Run the Codex MCP server (stdio by default; HTTP with --port).
-    McpServer(McpServerArgs),
+    /// [experimental] Run the Codex MCP server (stdio transport).
+    McpServer,
 
     /// [experimental] Run the app server.
     AppServer,
@@ -111,17 +111,6 @@ enum Subcommand {
 
     /// Inspect feature flags.
     Features(FeaturesCli),
-}
-
-#[derive(Debug, Parser)]
-struct McpServerArgs {
-    /// Bind and listen on this port for HTTP mode. If omitted, runs in stdio mode.
-    #[arg(short = 'p', long = "port")]
-    port: Option<u16>,
-
-    /// Host/interface to bind for HTTP mode (default 127.0.0.1)
-    #[arg(long = "host", default_value = "127.0.0.1")]
-    host: String,
 }
 
 #[derive(Debug, Parser)]
@@ -376,20 +365,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             );
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
-        Some(Subcommand::McpServer(args)) => match args.port {
-            Some(port) => {
-                codex_mcp_server::run_http_server(
-                    codex_linux_sandbox_exe,
-                    root_config_overrides,
-                    args.host,
-                    port,
-                )
-                .await?;
-            }
-            None => {
-                codex_mcp_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
-            }
-        },
+        Some(Subcommand::McpServer) => {
+            codex_mcp_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
+        }
         Some(Subcommand::Mcp(mut mcp_cli)) => {
             // Propagate any root-level config overrides (e.g. `-c key=value`).
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());

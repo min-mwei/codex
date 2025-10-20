@@ -39,7 +39,6 @@ use tokio::task::JoinSet;
 use tracing::info;
 use tracing::warn;
 
-use crate::azure_auth;
 use crate::config_types::McpServerConfig;
 use crate::config_types::McpServerTransportConfig;
 
@@ -229,7 +228,7 @@ impl McpClientAdapter {
 
 /// A thin wrapper around a set of running [`McpClient`] instances.
 #[derive(Default)]
-pub struct McpConnectionManager {
+pub(crate) struct McpConnectionManager {
     /// Server-name -> client instance.
     ///
     /// The server name originates from the keys of the `mcp_servers` map in
@@ -238,6 +237,9 @@ pub struct McpConnectionManager {
 
     /// Fully qualified tool name -> tool instance.
     tools: HashMap<String, ToolInfo>,
+
+    /// Server-name -> configured tool filters.
+    tool_filters: HashMap<String, ToolFilter>,
 }
 
 impl McpConnectionManager {
@@ -262,6 +264,7 @@ impl McpConnectionManager {
         // Launch all configured servers concurrently.
         let mut join_set = JoinSet::new();
         let mut errors = ClientStartErrors::new();
+        let mut tool_filters: HashMap<String, ToolFilter> = HashMap::new();
 
         for (server_name, cfg) in mcp_servers {
             // Validate server name before spawning
@@ -274,28 +277,20 @@ impl McpConnectionManager {
             }
 
             if !cfg.enabled {
+                tool_filters.insert(server_name, ToolFilter::from_config(&cfg));
                 continue;
             }
 
             let startup_timeout = cfg.startup_timeout_sec.unwrap_or(DEFAULT_STARTUP_TIMEOUT);
             let tool_timeout = cfg.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT);
+            tool_filters.insert(server_name.clone(), ToolFilter::from_config(&cfg));
 
-            let resolved_bearer_token = if let McpServerTransportConfig::StreamableHttp {
-                url,
-                bearer_token_env_var,
-                ..
-            } = &cfg.transport
-            {
-                match resolve_bearer_token(&server_name, url, bearer_token_env_var.as_deref()).await
-                {
-                    Ok(token) => token,
-                    Err(err) => {
-                        errors.insert(server_name.clone(), err);
-                        continue;
-                    }
-                }
-            } else {
-                None
+            let resolved_bearer_token = match &cfg.transport {
+                McpServerTransportConfig::StreamableHttp {
+                    bearer_token_env_var,
+                    ..
+                } => resolve_bearer_token(&server_name, bearer_token_env_var.as_deref()),
+                _ => Ok(None),
             };
 
             join_set.spawn(async move {
@@ -352,7 +347,7 @@ impl McpConnectionManager {
                         McpClientAdapter::new_streamable_http_client(
                             server_name.clone(),
                             url,
-                            resolved_bearer_token.clone(),
+                            resolved_bearer_token.unwrap_or_default(),
                             http_headers,
                             env_http_headers,
                             params,
@@ -404,9 +399,17 @@ impl McpConnectionManager {
             }
         };
 
-        let tools = qualify_tools(all_tools);
+        let filtered_tools = filter_tools(all_tools, &tool_filters);
+        let tools = qualify_tools(filtered_tools);
 
-        Ok((Self { clients, tools }, errors))
+        Ok((
+            Self {
+                clients,
+                tools,
+                tool_filters,
+            },
+            errors,
+        ))
     }
 
     /// Returns a single map that contains all tools. Each key is the
@@ -552,6 +555,13 @@ impl McpConnectionManager {
         tool: &str,
         arguments: Option<serde_json::Value>,
     ) -> Result<mcp_types::CallToolResult> {
+        if let Some(filter) = self.tool_filters.get(server)
+            && !filter.allows(tool)
+        {
+            return Err(anyhow!(
+                "tool '{tool}' is disabled for MCP server '{server}'"
+            ));
+        }
         let managed = self
             .clients
             .get(server)
@@ -630,66 +640,77 @@ impl McpConnectionManager {
     }
 }
 
-async fn resolve_bearer_token(
+/// A tool is allowed to be used if both are true:
+/// 1. enabled is None (no allowlist is set) or the tool is explicitly enabled.
+/// 2. The tool is not explicitly disabled.
+#[derive(Default, Clone)]
+struct ToolFilter {
+    enabled: Option<HashSet<String>>,
+    disabled: HashSet<String>,
+}
+
+impl ToolFilter {
+    fn from_config(cfg: &McpServerConfig) -> Self {
+        let enabled = cfg
+            .enabled_tools
+            .as_ref()
+            .map(|tools| tools.iter().cloned().collect::<HashSet<_>>());
+        let disabled = cfg
+            .disabled_tools
+            .as_ref()
+            .map(|tools| tools.iter().cloned().collect::<HashSet<_>>())
+            .unwrap_or_default();
+
+        Self { enabled, disabled }
+    }
+
+    fn allows(&self, tool_name: &str) -> bool {
+        if let Some(enabled) = &self.enabled
+            && !enabled.contains(tool_name)
+        {
+            return false;
+        }
+
+        !self.disabled.contains(tool_name)
+    }
+}
+
+fn filter_tools(tools: Vec<ToolInfo>, filters: &HashMap<String, ToolFilter>) -> Vec<ToolInfo> {
+    tools
+        .into_iter()
+        .filter(|tool| {
+            filters
+                .get(&tool.server_name)
+                .is_none_or(|filter| filter.allows(&tool.tool_name))
+        })
+        .collect()
+}
+
+fn resolve_bearer_token(
     server_name: &str,
-    url: &str,
     bearer_token_env_var: Option<&str>,
 ) -> Result<Option<String>> {
-    if let Some(env_var) = bearer_token_env_var {
-        return match env::var(env_var) {
-            Ok(value) => {
-                let trimmed = value.trim();
-                if trimmed.is_empty() {
-                    Err(anyhow!(
-                        "Environment variable {env_var} for MCP server '{server_name}' is empty"
-                    ))
-                } else {
-                    Ok(Some(trimmed.to_string()))
-                }
+    let Some(env_var) = bearer_token_env_var else {
+        return Ok(None);
+    };
+
+    match env::var(env_var) {
+        Ok(value) => {
+            if value.is_empty() {
+                Err(anyhow!(
+                    "Environment variable {env_var} for MCP server '{server_name}' is empty"
+                ))
+            } else {
+                Ok(Some(value))
             }
-            Err(env::VarError::NotPresent) => Err(anyhow!(
-                "Environment variable {env_var} for MCP server '{server_name}' is not set"
-            )),
-            Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
-                "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
-            )),
-        };
+        }
+        Err(env::VarError::NotPresent) => Err(anyhow!(
+            "Environment variable {env_var} for MCP server '{server_name}' is not set"
+        )),
+        Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
+        )),
     }
-
-    let parsed = reqwest::Url::parse(url).with_context(|| {
-        format!("failed to parse streamable HTTP URL `{url}` for MCP server `{server_name}`")
-    })?;
-
-    let host = parsed.host_str().ok_or_else(|| {
-        anyhow!("streamable HTTP URL `{url}` for MCP server `{server_name}` is missing a host")
-    })?;
-
-    if azure_auth::host_supports_default_credential(host) {
-        let scope = azure_auth::scope_from_host(host);
-        let token = acquire_azure_token_for_scope(server_name, &scope).await?;
-        Ok(Some(token))
-    } else {
-        info!(
-            server = %server_name,
-            host = host,
-            "MCP server host not recognized as Azure; proceeding without bearer token"
-        );
-        Ok(None)
-    }
-}
-
-#[cfg(not(test))]
-async fn acquire_azure_token_for_scope(server_name: &str, scope: &str) -> Result<String> {
-    azure_auth::acquire_access_token(Some(scope))
-        .await
-        .map_err(|error| {
-            anyhow!("failed to acquire Azure access token for MCP server `{server_name}`: {error}")
-        })
-}
-
-#[cfg(test)]
-async fn acquire_azure_token_for_scope(server_name: &str, scope: &str) -> Result<String> {
-    Ok(format!("test-token-for-{server_name}-{scope}"))
 }
 
 /// Query every server for its available tools and return a single map that
@@ -757,6 +778,7 @@ fn is_valid_mcp_server_name(server_name: &str) -> bool {
 mod tests {
     use super::*;
     use mcp_types::ToolInputSchema;
+    use std::collections::HashSet;
 
     fn create_test_tool(server_name: &str, tool_name: &str) -> ToolInfo {
         ToolInfo {
@@ -840,56 +862,74 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn resolve_bearer_token_returns_env_var_when_present() {
-        let env_var = "MCP_TOKEN_ENV";
-        unsafe { std::env::set_var(env_var, " secret-token ") };
+    #[test]
+    fn tool_filter_allows_by_default() {
+        let filter = ToolFilter::default();
 
-        let token = resolve_bearer_token("docs", "https://example.com/mcp", Some(env_var))
-            .await
-            .expect("env var token should resolve")
-            .expect("token should be returned");
-
-        assert_eq!(token, "secret-token");
-        unsafe { std::env::remove_var(env_var) };
+        assert!(filter.allows("any"));
     }
 
-    #[tokio::test]
-    async fn resolve_bearer_token_errors_when_env_var_empty() {
-        let env_var = "EMPTY_MCP_TOKEN";
-        unsafe { std::env::set_var(env_var, " ") };
+    #[test]
+    fn tool_filter_applies_enabled_list() {
+        let filter = ToolFilter {
+            enabled: Some(HashSet::from(["allowed".to_string()])),
+            disabled: HashSet::new(),
+        };
 
-        let err = resolve_bearer_token("docs", "https://example.com/mcp", Some(env_var))
-            .await
-            .expect_err("empty env var should error");
-
-        assert!(err.to_string().contains("is empty"));
-        unsafe { std::env::remove_var(env_var) };
+        assert!(filter.allows("allowed"));
+        assert!(!filter.allows("denied"));
     }
 
-    #[tokio::test]
-    async fn resolve_bearer_token_errors_when_env_var_missing() {
-        let err = resolve_bearer_token("docs", "https://example.com/mcp", Some("MISSING_ENV"))
-            .await
-            .expect_err("missing env var should error");
+    #[test]
+    fn tool_filter_applies_disabled_list() {
+        let filter = ToolFilter {
+            enabled: None,
+            disabled: HashSet::from(["blocked".to_string()]),
+        };
 
-        assert!(err.to_string().contains("is not set"));
+        assert!(!filter.allows("blocked"));
+        assert!(filter.allows("open"));
     }
 
-    #[tokio::test]
-    async fn resolve_bearer_token_uses_azure_default_when_missing() {
-        let server_name = "azure-server";
-        let url = "https://workspace.cognitiveservices.azure.com/mcp";
+    #[test]
+    fn tool_filter_applies_enabled_then_disabled() {
+        let filter = ToolFilter {
+            enabled: Some(HashSet::from(["keep".to_string(), "remove".to_string()])),
+            disabled: HashSet::from(["remove".to_string()]),
+        };
 
-        let token = resolve_bearer_token(server_name, url, None)
-            .await
-            .expect("azure default auth should succeed")
-            .expect("azure should return a token");
+        assert!(filter.allows("keep"));
+        assert!(!filter.allows("remove"));
+        assert!(!filter.allows("unknown"));
+    }
 
-        let expected_scope = "https://cognitiveservices.azure.com/.default";
-        assert_eq!(
-            token,
-            format!("test-token-for-{server_name}-{expected_scope}")
+    #[test]
+    fn filter_tools_applies_per_server_filters() {
+        let tools = vec![
+            create_test_tool("server1", "tool_a"),
+            create_test_tool("server1", "tool_b"),
+            create_test_tool("server2", "tool_a"),
+        ];
+        let mut filters = HashMap::new();
+        filters.insert(
+            "server1".to_string(),
+            ToolFilter {
+                enabled: Some(HashSet::from(["tool_a".to_string(), "tool_b".to_string()])),
+                disabled: HashSet::from(["tool_b".to_string()]),
+            },
         );
+        filters.insert(
+            "server2".to_string(),
+            ToolFilter {
+                enabled: None,
+                disabled: HashSet::from(["tool_a".to_string()]),
+            },
+        );
+
+        let filtered = filter_tools(tools, &filters);
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0].server_name, "server1");
+        assert_eq!(filtered[0].tool_name, "tool_a");
     }
 }
