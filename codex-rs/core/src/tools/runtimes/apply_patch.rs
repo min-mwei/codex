@@ -20,7 +20,11 @@ use crate::tools::sandboxing::with_cached_approval;
 use codex_protocol::protocol::ReviewDecision;
 use futures::future::BoxFuture;
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+use std::sync::Mutex;
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 pub struct ApplyPatchRequest {
@@ -127,6 +131,10 @@ impl Approvable<ApplyPatchRequest> for ApplyPatchRuntime {
             .await
         })
     }
+
+    fn wants_escalated_first_attempt(&self, req: &ApplyPatchRequest) -> bool {
+        req.user_explicitly_approved
+    }
 }
 
 impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
@@ -136,6 +144,10 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
         attempt: &SandboxAttempt<'_>,
         ctx: &ToolCtx<'_>,
     ) -> Result<ExecToolCallOutput, ToolError> {
+        if req.user_explicitly_approved {
+            return run_apply_patch_in_process(req);
+        }
+
         let spec = Self::build_command_spec(req)?;
         let env = attempt
             .env_for(&spec)
@@ -144,5 +156,59 @@ impl ToolRuntime<ApplyPatchRequest, ExecToolCallOutput> for ApplyPatchRuntime {
             .await
             .map_err(ToolError::Codex)?;
         Ok(out)
+    }
+}
+
+fn run_apply_patch_in_process(req: &ApplyPatchRequest) -> Result<ExecToolCallOutput, ToolError> {
+    static APPLY_PATCH_CWD_GUARD: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+    let _lock = APPLY_PATCH_CWD_GUARD
+        .lock()
+        .expect("apply_patch cwd guard should not be poisoned");
+
+    let cwd_guard = WorkingDirGuard::change_to(&req.cwd).map_err(|err| {
+        ToolError::Rejected(format!("failed to change to {}: {err}", req.cwd.display()))
+    })?;
+
+    let mut out_buf: Vec<u8> = Vec::new();
+    let mut err_buf: Vec<u8> = Vec::new();
+    let result = codex_apply_patch::apply_patch(&req.patch, &mut out_buf, &mut err_buf);
+    drop(cwd_guard);
+
+    let exit_code = if result.is_ok() { 0 } else { 1 };
+    let stdout_text = String::from_utf8_lossy(&out_buf).to_string();
+    let stderr_text = String::from_utf8_lossy(&err_buf).to_string();
+    let aggregated = if stdout_text.is_empty() {
+        stderr_text.clone()
+    } else if stderr_text.is_empty() {
+        stdout_text.clone()
+    } else {
+        format!("{stdout_text}\n{stderr_text}")
+    };
+
+    Ok(ExecToolCallOutput {
+        exit_code,
+        stdout: crate::exec::StreamOutput::new(stdout_text),
+        stderr: crate::exec::StreamOutput::new(stderr_text),
+        aggregated_output: crate::exec::StreamOutput::new(aggregated),
+        duration: Duration::default(),
+        timed_out: false,
+    })
+}
+
+struct WorkingDirGuard {
+    original: PathBuf,
+}
+
+impl WorkingDirGuard {
+    fn change_to(path: &Path) -> std::io::Result<Self> {
+        let original = std::env::current_dir()?;
+        std::env::set_current_dir(path)?;
+        Ok(Self { original })
+    }
+}
+
+impl Drop for WorkingDirGuard {
+    fn drop(&mut self) {
+        let _ = std::env::set_current_dir(&self.original);
     }
 }

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use anyhow::Result;
+use anyhow::anyhow;
 use codex_core::model_family::find_family_for_model;
 use codex_core::protocol::ApplyPatchApprovalRequestEvent;
 use codex_core::protocol::AskForApproval;
@@ -226,7 +227,15 @@ impl Expectation {
                     "stdout missing {content:?}: {}",
                     result.stdout
                 );
-                let file_contents = fs::read_to_string(&path)?;
+                let file_contents = fs::read_to_string(&path).map_err(|err| {
+                    anyhow!(
+                        "failed to read {path:?}: {err}; exit_code={exit_code:?}; stdout={stdout}",
+                        path = path,
+                        err = err,
+                        exit_code = result.exit_code,
+                        stdout = result.stdout
+                    )
+                })?;
                 assert!(
                     file_contents.contains(content),
                     "file contents missing {content:?}: {file_contents}"
@@ -250,7 +259,15 @@ impl Expectation {
                         path, result.stdout
                     ),
                 }
-                let file_contents = fs::read_to_string(&path)?;
+                let file_contents = fs::read_to_string(&path).map_err(|err| {
+                    anyhow!(
+                        "failed to read {path:?} after patch: {err}; exit_code={exit_code:?}; stdout={stdout}",
+                        path = path,
+                        err = err,
+                        exit_code = result.exit_code,
+                        stdout = result.stdout
+                    )
+                })?;
                 assert!(
                     file_contents.contains(content),
                     "patched file missing {content:?}: {file_contents}"
