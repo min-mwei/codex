@@ -149,11 +149,17 @@ impl CodexToolCallParam {
         } = self;
 
         // Build the `ConfigOverrides` recognized by codex-core.
+        let cwd_path = cwd.map(PathBuf::from);
+        let additional_writable_roots = cwd_path
+            .as_ref()
+            .map(|p| vec![p.clone()])
+            .unwrap_or_default();
+
         let overrides = codex_core::config::ConfigOverrides {
             model,
             review_model: None,
             config_profile: profile,
-            cwd: cwd.map(PathBuf::from),
+            cwd: cwd_path,
             approval_policy: approval_policy.map(Into::into),
             sandbox_mode: sandbox.map(Into::into),
             model_provider: None,
@@ -164,7 +170,7 @@ impl CodexToolCallParam {
             include_view_image_tool: None,
             show_raw_agent_reasoning: None,
             tools_web_search_request: None,
-            additional_writable_roots: Vec::new(),
+            additional_writable_roots,
         };
 
         let cli_overrides = cli_overrides

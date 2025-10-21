@@ -7,6 +7,7 @@
 
 mod apply_patch;
 pub mod auth;
+mod azure_auth;
 pub mod bash;
 mod chat_completions;
 mod client;
@@ -52,6 +53,7 @@ pub mod review_format;
 pub use codex_protocol::protocol::InitialHistory;
 pub use conversation_manager::ConversationManager;
 pub use conversation_manager::NewConversation;
+pub use mcp_connection_manager::McpConnectionManager;
 // Re-export common auth types for workspace consumers
 pub use auth::AuthManager;
 pub use auth::CodexAuth;

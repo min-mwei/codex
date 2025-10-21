@@ -39,8 +39,10 @@ use tokio::task::JoinSet;
 use tracing::info;
 use tracing::warn;
 
+use crate::azure_auth;
 use crate::config_types::McpServerConfig;
 use crate::config_types::McpServerTransportConfig;
+use reqwest::Url;
 
 /// Delimiter used to separate the server name from the tool name in a fully
 /// qualified tool name.
@@ -228,7 +230,7 @@ impl McpClientAdapter {
 
 /// A thin wrapper around a set of running [`McpClient`] instances.
 #[derive(Default)]
-pub(crate) struct McpConnectionManager {
+pub struct McpConnectionManager {
     /// Server-name -> client instance.
     ///
     /// The server name originates from the keys of the `mcp_servers` map in
@@ -285,12 +287,22 @@ impl McpConnectionManager {
             let tool_timeout = cfg.tool_timeout_sec.unwrap_or(DEFAULT_TOOL_TIMEOUT);
             tool_filters.insert(server_name.clone(), ToolFilter::from_config(&cfg));
 
-            let resolved_bearer_token = match &cfg.transport {
-                McpServerTransportConfig::StreamableHttp {
-                    bearer_token_env_var,
-                    ..
-                } => resolve_bearer_token(&server_name, bearer_token_env_var.as_deref()),
-                _ => Ok(None),
+            let resolved_bearer_token = if let McpServerTransportConfig::StreamableHttp {
+                url,
+                bearer_token_env_var,
+                ..
+            } = &cfg.transport
+            {
+                match resolve_bearer_token(&server_name, url, bearer_token_env_var.as_deref()).await
+                {
+                    Ok(token) => token,
+                    Err(err) => {
+                        errors.insert(server_name.clone(), err);
+                        continue;
+                    }
+                }
+            } else {
+                None
             };
 
             join_set.spawn(async move {
@@ -347,7 +359,7 @@ impl McpConnectionManager {
                         McpClientAdapter::new_streamable_http_client(
                             server_name.clone(),
                             url,
-                            resolved_bearer_token.unwrap_or_default(),
+                            resolved_bearer_token.clone(),
                             http_headers,
                             env_http_headers,
                             params,
@@ -686,31 +698,49 @@ fn filter_tools(tools: Vec<ToolInfo>, filters: &HashMap<String, ToolFilter>) -> 
         .collect()
 }
 
-fn resolve_bearer_token(
+async fn resolve_bearer_token(
     server_name: &str,
+    url: &str,
     bearer_token_env_var: Option<&str>,
 ) -> Result<Option<String>> {
-    let Some(env_var) = bearer_token_env_var else {
-        return Ok(None);
-    };
-
-    match env::var(env_var) {
-        Ok(value) => {
-            if value.is_empty() {
-                Err(anyhow!(
-                    "Environment variable {env_var} for MCP server '{server_name}' is empty"
-                ))
-            } else {
-                Ok(Some(value))
+    if let Some(env_var) = bearer_token_env_var {
+        return match env::var(env_var) {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    Err(anyhow!(
+                        "Environment variable {env_var} for MCP server '{server_name}' is empty"
+                    ))
+                } else {
+                    Ok(Some(trimmed.to_string()))
+                }
             }
-        }
-        Err(env::VarError::NotPresent) => Err(anyhow!(
-            "Environment variable {env_var} for MCP server '{server_name}' is not set"
-        )),
-        Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
-            "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
-        )),
+            Err(env::VarError::NotPresent) => Err(anyhow!(
+                "Environment variable {env_var} for MCP server '{server_name}' is not set"
+            )),
+            Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
+                "Environment variable {env_var} for MCP server '{server_name}' contains invalid Unicode"
+            )),
+        };
     }
+
+    let parsed = Url::parse(url).with_context(|| {
+        format!("failed to parse streamable HTTP URL `{url}` for MCP server `{server_name}`")
+    })?;
+
+    let host = parsed.host_str().ok_or_else(|| {
+        anyhow!("streamable HTTP URL `{url}` for MCP server `{server_name}` is missing a host")
+    })?;
+
+    if azure_auth::host_supports_default_credential(host) {
+        let scope = azure_auth::scope_from_host(host);
+        let token = azure_auth::acquire_access_token(Some(&scope))
+            .await
+            .map_err(|err| anyhow!("failed to acquire Azure token for `{server_name}`: {err}"))?;
+        return Ok(Some(token));
+    }
+
+    Ok(None)
 }
 
 /// Query every server for its available tools and return a single map that

@@ -74,8 +74,8 @@ enum Subcommand {
     /// [experimental] Run Codex as an MCP server and manage MCP servers.
     Mcp(McpCli),
 
-    /// [experimental] Run the Codex MCP server (stdio transport).
-    McpServer,
+    /// [experimental] Run the Codex MCP server (stdio by default; HTTP with --port).
+    McpServer(McpServerArgs),
 
     /// [experimental] Run the app server.
     AppServer,
@@ -118,6 +118,17 @@ struct CompletionCommand {
     /// Shell to generate completions for
     #[clap(value_enum, default_value_t = Shell::Bash)]
     shell: Shell,
+}
+
+#[derive(Debug, Parser)]
+struct McpServerArgs {
+    /// Bind and listen on this port for HTTP mode. If omitted, runs in stdio mode.
+    #[arg(short = 'p', long = "port")]
+    port: Option<u16>,
+
+    /// Host/interface to bind for HTTP mode (default 127.0.0.1)
+    #[arg(long = "host", default_value = "127.0.0.1")]
+    host: String,
 }
 
 #[derive(Debug, Parser)]
@@ -365,9 +376,20 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             );
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
-        Some(Subcommand::McpServer) => {
-            codex_mcp_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
-        }
+        Some(Subcommand::McpServer(args)) => match args.port {
+            Some(port) => {
+                codex_mcp_server::run_http_server(
+                    codex_linux_sandbox_exe,
+                    root_config_overrides,
+                    args.host,
+                    port,
+                )
+                .await?;
+            }
+            None => {
+                codex_mcp_server::run_main(codex_linux_sandbox_exe, root_config_overrides).await?;
+            }
+        },
         Some(Subcommand::Mcp(mut mcp_cli)) => {
             // Propagate any root-level config overrides (e.g. `-c key=value`).
             prepend_config_flags(&mut mcp_cli.config_overrides, root_config_overrides.clone());
@@ -639,6 +661,27 @@ mod tests {
                 .map(ConversationId::from_string)
                 .map(Result::unwrap),
             update_action: None,
+        }
+    }
+
+    #[test]
+    fn mcp_server_test() {
+        let cli = MultitoolCli::try_parse_from([
+            "codex",
+            "mcp-server",
+            "--port",
+            "1234",
+            "--host",
+            "0.0.0.0",
+        ])
+        .expect("cli parse");
+
+        match cli.subcommand {
+            Some(Subcommand::McpServer(args)) => {
+                assert_eq!(args.port, Some(1234));
+                assert_eq!(args.host, "0.0.0.0");
+            }
+            other => panic!("expected McpServer args, got {other:?}"),
         }
     }
 

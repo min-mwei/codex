@@ -10,8 +10,13 @@ use crate::outgoing_message::OutgoingMessageSender;
 use codex_protocol::ConversationId;
 use codex_protocol::protocol::SessionSource;
 
+use crate::mcp_session_error;
+use crate::mcp_session_info;
+use crate::mcp_session_trace;
+use crate::mcp_session_warn;
 use codex_core::AuthManager;
 use codex_core::ConversationManager;
+use codex_core::McpConnectionManager;
 use codex_core::config::Config;
 use codex_core::default_client::USER_AGENT_SUFFIX;
 use codex_core::default_client::get_codex_user_agent;
@@ -37,10 +42,13 @@ use tokio::sync::Mutex;
 use tokio::task;
 
 pub(crate) struct MessageProcessor {
+    // Session identifier used for structured logging.
+    session_id: String,
     outgoing: Arc<OutgoingMessageSender>,
     initialized: bool,
     codex_linux_sandbox_exe: Option<PathBuf>,
     conversation_manager: Arc<ConversationManager>,
+    mcp_connection_manager: Arc<McpConnectionManager>,
     running_requests_id_to_codex_uuid: Arc<Mutex<HashMap<RequestId, ConversationId>>>,
 }
 
@@ -48,19 +56,23 @@ impl MessageProcessor {
     /// Create a new `MessageProcessor`, retaining a handle to the outgoing
     /// `Sender` so handlers can enqueue messages to be written to stdout.
     pub(crate) fn new(
+        session_id: String,
         outgoing: OutgoingMessageSender,
         codex_linux_sandbox_exe: Option<PathBuf>,
         config: Arc<Config>,
+        mcp_connection_manager: Arc<McpConnectionManager>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
         let auth_manager = AuthManager::shared(config.codex_home.clone(), false);
         let conversation_manager =
             Arc::new(ConversationManager::new(auth_manager, SessionSource::Mcp));
         Self {
+            session_id,
             outgoing,
             initialized: false,
             codex_linux_sandbox_exe,
             conversation_manager,
+            mcp_connection_manager,
             running_requests_id_to_codex_uuid: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -72,7 +84,7 @@ impl MessageProcessor {
         let client_request = match McpClientRequest::try_from(request) {
             Ok(client_request) => client_request,
             Err(e) => {
-                tracing::warn!("Failed to convert request: {e}");
+                mcp_session_warn!(self.session_id, "Failed to convert request: {e}");
                 return;
             }
         };
@@ -123,7 +135,7 @@ impl MessageProcessor {
 
     /// Handle a standalone JSON-RPC response originating from the peer.
     pub(crate) async fn process_response(&mut self, response: JSONRPCResponse) {
-        tracing::info!("<- response: {:?}", response);
+        mcp_session_info!(self.session_id, "<- response: {:?}", response);
         let JSONRPCResponse { id, result, .. } = response;
         self.outgoing.notify_client_response(id, result).await
     }
@@ -133,7 +145,7 @@ impl MessageProcessor {
         let server_notification = match ServerNotification::try_from(notification) {
             Ok(n) => n,
             Err(e) => {
-                tracing::warn!("Failed to convert notification: {e}");
+                mcp_session_warn!(self.session_id, "Failed to convert notification: {e}");
                 return;
             }
         };
@@ -167,7 +179,7 @@ impl MessageProcessor {
 
     /// Handle an error object received from the peer.
     pub(crate) fn process_error(&mut self, err: JSONRPCError) {
-        tracing::error!("<- error: {:?}", err);
+        mcp_session_error!(self.session_id, "<- error: {:?}", err);
     }
 
     async fn handle_initialize(
@@ -175,7 +187,7 @@ impl MessageProcessor {
         id: RequestId,
         params: <mcp_types::InitializeRequest as ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("initialize -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "initialize -> params: {:?}", params);
 
         if self.initialized {
             // Already initialised: send JSON-RPC error response.
@@ -236,7 +248,7 @@ impl MessageProcessor {
         id: RequestId,
         params: <mcp_types::PingRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("ping -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "ping -> params: {:?}", params);
         let result = json!({});
         self.send_response::<mcp_types::PingRequest>(id, result)
             .await;
@@ -246,7 +258,7 @@ impl MessageProcessor {
         &self,
         params: <mcp_types::ListResourcesRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("resources/list -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "resources/list -> params: {:?}", params);
     }
 
     fn handle_list_resource_templates(
@@ -254,42 +266,54 @@ impl MessageProcessor {
         params:
             <mcp_types::ListResourceTemplatesRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("resources/templates/list -> params: {:?}", params);
+        mcp_session_info!(
+            self.session_id,
+            "resources/templates/list -> params: {:?}",
+            params
+        );
     }
 
     fn handle_read_resource(
         &self,
         params: <mcp_types::ReadResourceRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("resources/read -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "resources/read -> params: {:?}", params);
     }
 
     fn handle_subscribe(
         &self,
         params: <mcp_types::SubscribeRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("resources/subscribe -> params: {:?}", params);
+        mcp_session_info!(
+            self.session_id,
+            "resources/subscribe -> params: {:?}",
+            params
+        );
     }
 
     fn handle_unsubscribe(
         &self,
         params: <mcp_types::UnsubscribeRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("resources/unsubscribe -> params: {:?}", params);
+        mcp_session_info!(
+            self.session_id,
+            "resources/unsubscribe -> params: {:?}",
+            params
+        );
     }
 
     fn handle_list_prompts(
         &self,
         params: <mcp_types::ListPromptsRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("prompts/list -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "prompts/list -> params: {:?}", params);
     }
 
     fn handle_get_prompt(
         &self,
         params: <mcp_types::GetPromptRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("prompts/get -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "prompts/get -> params: {:?}", params);
     }
 
     async fn handle_list_tools(
@@ -297,7 +321,7 @@ impl MessageProcessor {
         id: RequestId,
         params: <mcp_types::ListToolsRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::trace!("tools/list -> {params:?}");
+        mcp_session_trace!(self.session_id, "tools/list -> {params:?}");
         let result = ListToolsResult {
             tools: vec![
                 create_tool_for_codex_tool_call_param(),
@@ -315,7 +339,7 @@ impl MessageProcessor {
         id: RequestId,
         params: <mcp_types::CallToolRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("tools/call -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "tools/call -> params: {:?}", params);
         let CallToolRequestParams { name, arguments } = params;
 
         match name.as_str() {
@@ -324,18 +348,63 @@ impl MessageProcessor {
                 self.handle_tool_call_codex_session_reply(id, arguments)
                     .await
             }
-            _ => {
-                let result = CallToolResult {
-                    content: vec![ContentBlock::TextContent(TextContent {
-                        r#type: "text".to_string(),
-                        text: format!("Unknown tool '{name}'"),
-                        annotations: None,
-                    })],
-                    is_error: Some(true),
-                    structured_content: None,
-                };
-                self.send_response::<mcp_types::CallToolRequest>(id, result)
-                    .await;
+            other => {
+                if let Some((server_name, tool_name)) =
+                    self.mcp_connection_manager.parse_tool_name(other)
+                {
+                    mcp_session_info!(
+                        self.session_id,
+                        "forwarding tool call to {server_name}/{tool_name}",
+                    );
+
+                    match self
+                        .mcp_connection_manager
+                        .call_tool(&server_name, &tool_name, arguments)
+                        .await
+                    {
+                        Ok(result) => {
+                            self.send_response::<mcp_types::CallToolRequest>(id, result)
+                                .await;
+                        }
+                        Err(err) => {
+                            mcp_session_warn!(
+                                self.session_id,
+                                "tool call failed for {server_name}/{tool_name}: {err:#}",
+                            );
+                            let result = CallToolResult {
+                                content: vec![ContentBlock::TextContent(TextContent {
+                                    r#type: "text".to_string(),
+                                    text: format!(
+                                        "tool call failed for `{server_name}/{tool_name}`: {err:#}"
+                                    ),
+                                    annotations: None,
+                                })],
+                                is_error: Some(true),
+                                structured_content: None,
+                            };
+                            self.send_response::<mcp_types::CallToolRequest>(id, result)
+                                .await;
+                        }
+                    }
+                } else {
+                    let text = if other.starts_with("remote_http__") || other.starts_with("mcp__") {
+                        "Remote MCP tools are managed internally by Codex and are not exposed directly to clients.".to_string()
+                    } else {
+                        format!("Unknown tool '{other}'")
+                    };
+
+                    let result = CallToolResult {
+                        content: vec![ContentBlock::TextContent(TextContent {
+                            r#type: "text".to_string(),
+                            text,
+                            annotations: None,
+                        })],
+                        is_error: Some(true),
+                        structured_content: None,
+                    };
+                    self.send_response::<mcp_types::CallToolRequest>(id, result)
+                        .await;
+                }
             }
         }
     }
@@ -535,14 +604,18 @@ impl MessageProcessor {
         &self,
         params: <mcp_types::SetLevelRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("logging/setLevel -> params: {:?}", params);
+        mcp_session_info!(self.session_id, "logging/setLevel -> params: {:?}", params);
     }
 
     fn handle_complete(
         &self,
         params: <mcp_types::CompleteRequest as mcp_types::ModelContextProtocolRequest>::Params,
     ) {
-        tracing::info!("completion/complete -> params: {:?}", params);
+        mcp_session_info!(
+            self.session_id,
+            "completion/complete -> params: {:?}",
+            params
+        );
     }
 
     // ---------------------------------------------------------------------
@@ -566,12 +639,16 @@ impl MessageProcessor {
             match map_guard.get(&request_id) {
                 Some(id) => *id,
                 None => {
-                    tracing::warn!("Session not found for request_id: {}", request_id_string);
+                    mcp_session_warn!(
+                        self.session_id,
+                        "Session not found for request_id: {}",
+                        request_id_string
+                    );
                     return;
                 }
             }
         };
-        tracing::info!("conversation_id: {conversation_id}");
+        mcp_session_info!(self.session_id, "conversation_id: {conversation_id}");
 
         // Obtain the Codex conversation from the server.
         let codex_arc = match self
@@ -581,7 +658,10 @@ impl MessageProcessor {
         {
             Ok(c) => c,
             Err(_) => {
-                tracing::warn!("Session not found for conversation_id: {conversation_id}");
+                mcp_session_warn!(
+                    self.session_id,
+                    "Session not found for conversation_id: {conversation_id}"
+                );
                 return;
             }
         };
@@ -594,7 +674,7 @@ impl MessageProcessor {
             })
             .await;
         if let Err(e) = err {
-            tracing::error!("Failed to submit interrupt to Codex: {e}");
+            mcp_session_error!(self.session_id, "Failed to submit interrupt to Codex: {e}");
             return;
         }
         // unregister the id so we don't keep it in the map
