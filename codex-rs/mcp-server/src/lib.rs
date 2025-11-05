@@ -108,7 +108,6 @@ fn init_tracing() -> IoResult<()> {
 async fn create_mcp_connection_manager(config: &Config) -> Arc<McpConnectionManager> {
     match McpConnectionManager::new(
         config.mcp_servers.clone(),
-        config.use_experimental_use_rmcp_client,
         config.mcp_oauth_credentials_store_mode,
     )
     .await
