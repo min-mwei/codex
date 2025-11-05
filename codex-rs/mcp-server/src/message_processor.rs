@@ -63,7 +63,11 @@ impl MessageProcessor {
         mcp_connection_manager: Arc<McpConnectionManager>,
     ) -> Self {
         let outgoing = Arc::new(outgoing);
-        let auth_manager = AuthManager::shared(config.codex_home.clone(), false);
+        let auth_manager = AuthManager::shared(
+            config.codex_home.clone(),
+            false,
+            config.cli_auth_credentials_store_mode,
+        );
         let conversation_manager =
             Arc::new(ConversationManager::new(auth_manager, SessionSource::Mcp));
         Self {
