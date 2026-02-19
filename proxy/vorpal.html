@@ -1,0 +1,672 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Vorpal Terminal</title>
+    <style>
+      :root {
+        --bg: #f3f5f9;
+        --bg-2: #e6ebf3;
+        --panel: #ffffff;
+        --panel-2: #f7f9fc;
+        --ink: #0f172a;
+        --muted: #4b5563;
+        --accent: #0ea5a4;
+        --accent-2: #2563eb;
+        --danger: #b42318;
+        --border: #d7dde8;
+        --mono: "JetBrains Mono", "SFMono-Regular", "Consolas", "Menlo", monospace;
+        --sans: "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0b0f1a;
+          --bg-2: #0f1a2f;
+          --panel: #0f1628;
+          --panel-2: #111b32;
+          --ink: #e6edf6;
+          --muted: #93a4bf;
+          --accent: #41f2b3;
+          --accent-2: #5ab6ff;
+          --danger: #ff6b6b;
+          --border: #1c2a46;
+        }
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        font-family: var(--sans);
+        background: radial-gradient(900px 500px at 10% 10%, var(--bg-2) 0%, transparent 60%),
+          radial-gradient(700px 500px at 90% 20%, rgba(37, 99, 235, 0.18) 0%, transparent 55%),
+          linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+      }
+
+      .page {
+        max-width: 1100px;
+        margin: 28px auto 60px;
+        padding: 0 20px;
+      }
+
+      header {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        margin-bottom: 18px;
+      }
+
+      h1 {
+        margin: 0;
+        font-weight: 600;
+        font-size: 26px;
+        letter-spacing: 0.4px;
+      }
+
+      .tag {
+        font-family: var(--mono);
+        font-size: 12px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        color: #08131f;
+        font-weight: 700;
+      }
+
+      .terminal {
+        background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+        border: 1px solid var(--border);
+        border-radius: 14px;
+        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
+        padding: 16px;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+
+      .toolbar label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        color: var(--muted);
+      }
+
+      input,
+      textarea,
+      button {
+        font-family: var(--mono);
+      }
+
+      input[type="text"],
+      textarea {
+        background: var(--panel);
+        color: var(--ink);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 13px;
+        outline: none;
+      }
+
+      input[type="text"] {
+        min-width: 240px;
+      }
+
+      button {
+        border: none;
+        padding: 10px 14px;
+        border-radius: 10px;
+        font-size: 12px;
+        font-weight: 700;
+        cursor: pointer;
+        background: linear-gradient(90deg, var(--accent), var(--accent-2));
+        color: #08131f;
+        transition: transform 0.15s ease, box-shadow 0.15s ease;
+        box-shadow: 0 8px 18px rgba(90, 182, 255, 0.2);
+      }
+
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 10px 20px rgba(90, 182, 255, 0.28);
+      }
+
+      button.secondary {
+        background: var(--panel-2);
+        color: var(--ink);
+        border: 1px solid var(--border);
+        box-shadow: none;
+      }
+
+      button.danger {
+        background: #fef2f2;
+        color: var(--danger);
+        border: 1px solid #fecaca;
+        box-shadow: none;
+      }
+
+      .status {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      .log {
+        font-family: var(--mono);
+        font-size: 12px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 12px;
+        height: 360px;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+
+      .input-row {
+        display: grid;
+        grid-template-columns: auto 1fr auto;
+        gap: 10px;
+        align-items: center;
+        margin-top: 12px;
+      }
+
+      .prompt {
+        font-family: var(--mono);
+        color: var(--accent);
+        font-weight: 700;
+      }
+
+      textarea {
+        min-height: 56px;
+        resize: vertical;
+      }
+
+      .hint {
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      @media (max-width: 720px) {
+        .input-row {
+          grid-template-columns: 1fr;
+        }
+
+        .prompt {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <header>
+        <div>
+          <h1>Vorpal CLI</h1>
+          <div class="hint">AI Security Agent</div>
+        </div>
+      </header>
+
+      <section class="terminal">
+        <div class="toolbar">
+          <button id="initBtn" class="secondary">New Conversation</button>
+          <button id="clearBtn" class="danger">Clear</button>
+          <label for="debugToggle">Debug</label>
+          <input id="debugToggle" type="checkbox" />
+          <div id="status" class="status">Status: idle</div>
+        </div>
+
+        <div id="log" class="log"></div>
+
+        <div class="input-row">
+          <div class="prompt">&gt;</div>
+          <textarea id="payload" spellcheck="false"></textarea>
+          <button id="sendBtn" class="secondary">Send</button>
+        </div>
+
+        <div class="hint">Type a message and press Enter. Shift+Enter for a new line.</div>
+      </section>
+    </div>
+
+    <script>
+      (() => {
+        const sendBtn = document.getElementById("sendBtn");
+        const initBtn = document.getElementById("initBtn");
+        const clearBtn = document.getElementById("clearBtn");
+        const debugToggle = document.getElementById("debugToggle");
+        const payloadInput = document.getElementById("payload");
+        const logEl = document.getElementById("log");
+        const statusEl = document.getElementById("status");
+
+        let socket = null;
+        let nextId = 1;
+        let threadId = null;
+        let initRequested = false;
+        let initialized = false;
+        let initRequestId = null;
+        let threadRequested = false;
+        let threadRequestId = null;
+        const pendingInputs = [];
+        const logLines = [];
+        let streaming = false;
+        let streamBuffer = "";
+        let streamTimestamp = null;
+        let streamLineIndex = null;
+        let lastAssistantKey = null;
+        let lastAssistantAt = 0;
+        let reconnectTimer = null;
+        let connectInFlight = false;
+
+        const isDebug = () => debugToggle && debugToggle.checked;
+        const showInterim = false;
+        const logSystem = (prefix, line) => {
+          if (isDebug()) {
+            logLine(prefix, line);
+          }
+        };
+
+        const defaultWsUrl = (() => {
+          if (window.location && window.location.protocol === "https:") {
+            return `wss://${window.location.host}`;
+          }
+          if (window.location && window.location.protocol === "http:") {
+            return `ws://${window.location.host}`;
+          }
+          return "ws://localhost:4501";
+        })();
+
+        const wsUrl = defaultWsUrl;
+
+        const renderLog = () => {
+          logEl.textContent = logLines.join("\n") + (logLines.length ? "\n" : "");
+          logEl.scrollTop = logEl.scrollHeight;
+        };
+
+        const logLine = (prefix, line) => {
+          const ts = new Date().toISOString();
+          logLines.push(`[${ts}] ${prefix} ${line}`);
+          renderLog();
+        };
+
+        const updateLineAt = (index, line) => {
+          if (index == null || index < 0 || index >= logLines.length) {
+            logLines.push(line);
+          } else {
+            logLines[index] = line;
+          }
+          renderLog();
+        };
+
+        const setStatus = (text) => {
+          statusEl.textContent = `Status: ${text}`;
+        };
+
+        const sendJson = (obj) => {
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            logLine("!!", "socket not open");
+            return;
+          }
+          const jsonLine = JSON.stringify(obj) + "\n";
+          socket.send(jsonLine);
+          if (isDebug()) {
+            logLine(">>", jsonLine.trim());
+          }
+        };
+
+        const sendFromInput = () => {
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            const raw = payloadInput.value;
+            if (!raw.trim()) {
+              return;
+            }
+            const text = raw.trim();
+            pendingInputs.push(text);
+            payloadInput.value = "";
+            logLine("user>", text);
+            connect();
+            return;
+          }
+          const raw = payloadInput.value;
+          if (!raw.trim()) {
+            return;
+          }
+          const text = raw.trim();
+          pendingInputs.push(text);
+          payloadInput.value = "";
+          logLine("user>", text);
+          ensureSession();
+          flushInputs();
+        };
+
+        const defaultInit = () => ({
+          id: nextId++,
+          method: "initialize",
+          params: {
+            clientInfo: {
+              name: "vorpal-web",
+              title: "Vorpal Web Client",
+              version: "0.1.0",
+            },
+          },
+        });
+
+        const ensureSession = () => {
+          if (!initRequested) {
+            initRequested = true;
+            initRequestId = nextId;
+            sendJson(defaultInit());
+          }
+          if (initialized && !threadRequested) {
+            threadRequested = true;
+            threadRequestId = nextId;
+            sendJson({ id: nextId++, method: "thread/start", params: {} });
+          }
+        };
+
+        const flushInputs = () => {
+          if (!threadId) {
+            return;
+          }
+          while (pendingInputs.length) {
+            const text = pendingInputs.shift();
+            sendJson({
+              id: nextId++,
+              method: "turn/start",
+              params: {
+                threadId,
+                input: [{ type: "text", text }],
+              },
+            });
+          }
+        };
+
+        const beginStream = () => {
+          streamTimestamp = new Date().toISOString();
+          streamLineIndex = logLines.length;
+          logLines.push(`[${streamTimestamp}] assistant> `);
+          renderLog();
+        };
+
+        const updateStream = () => {
+          if (streamLineIndex == null) {
+            beginStream();
+          }
+          const ts = streamTimestamp || new Date().toISOString();
+          updateLineAt(streamLineIndex, `[${ts}] assistant> ${streamBuffer}`);
+        };
+
+        const endStream = () => {
+          streaming = false;
+          streamBuffer = "";
+          streamTimestamp = null;
+          streamLineIndex = null;
+        };
+
+        const handleAssistantDelta = (delta) => {
+          if (!delta) return;
+          if (!streaming) {
+            streaming = true;
+            streamBuffer = "";
+            beginStream();
+          }
+          streamBuffer += delta;
+          updateStream();
+        };
+
+        const isDuplicateAssistant = (turnId, message) => {
+          const key = `${turnId || "unknown"}|${message}`;
+          const now = Date.now();
+          if (lastAssistantKey === key && now - lastAssistantAt < 1000) {
+            return true;
+          }
+          lastAssistantKey = key;
+          lastAssistantAt = now;
+          return false;
+        };
+
+        const handleAssistantMessage = (message, turnId = null) => {
+          if (!message) return;
+          if (isDuplicateAssistant(turnId, message)) {
+            return;
+          }
+          if (streaming) {
+            streamBuffer = message;
+            updateStream();
+            endStream();
+          } else {
+            logLine("assistant>", message);
+          }
+        };
+
+        const handleEventMsg = (msg, turnId = null) => {
+          if (!msg || !msg.type) {
+            return;
+          }
+          if (msg.type === "agent_message") {
+            handleAssistantMessage(msg.message || "", turnId);
+            return;
+          }
+          if (msg.type === "agent_message_delta" || msg.type === "agent_message_content_delta") {
+            if (showInterim) {
+              handleAssistantDelta(msg.delta || "");
+            }
+            return;
+          }
+          if (msg.type === "error" && msg.message) {
+            logLine("error", msg.message);
+          }
+        };
+
+        const isAlreadyInitializedError = (obj) => {
+          if (!obj || !obj.error || !obj.error.message) {
+            return false;
+          }
+          return String(obj.error.message).toLowerCase().includes("already initialized");
+        };
+
+        const handleIncoming = (line) => {
+          if (!line.trim()) return;
+          let obj;
+          try {
+            obj = JSON.parse(line);
+          } catch (err) {
+            logLine("!!", `invalid JSON from server: ${err.message}`);
+            return;
+          }
+          if (obj.id && obj.id === initRequestId && obj.result) {
+            initialized = true;
+            logSystem("**", "initialized");
+            ensureSession();
+            return;
+          }
+          if (obj.id && obj.id === initRequestId && isAlreadyInitializedError(obj)) {
+            initialized = true;
+            logSystem("**", "already initialized");
+            ensureSession();
+            return;
+          }
+          if (obj.id && obj.id === threadRequestId && obj.result && obj.result.thread) {
+            const newThreadId = obj.result.thread.id;
+            if (threadId !== newThreadId) {
+              threadId = newThreadId;
+              logSystem("**", `thread ${threadId} ready`);
+            }
+            flushInputs();
+            return;
+          }
+          if (obj.result && obj.result.thread && obj.result.thread.id) {
+            const newThreadId = obj.result.thread.id;
+            if (threadId !== newThreadId) {
+              threadId = newThreadId;
+              logSystem("**", `thread ${threadId} ready`);
+            }
+            flushInputs();
+            return;
+          }
+          if (obj.method === "thread/started" && obj.params && obj.params.thread) {
+            const newThreadId = obj.params.thread.id;
+            if (threadId !== newThreadId) {
+              threadId = newThreadId;
+              logSystem("**", `thread ${threadId} ready`);
+            }
+            flushInputs();
+            return;
+          }
+          if (obj.method === "item/agentMessage/delta" && obj.params) {
+            if (showInterim) {
+              handleAssistantDelta(obj.params.delta || "");
+            }
+            return;
+          }
+          if (obj.method === "item/completed" && obj.params && obj.params.item) {
+            const item = obj.params.item;
+            if (item.type === "agentMessage" && item.text) {
+              handleAssistantMessage(item.text, obj.params.turnId || null);
+              return;
+            }
+          }
+          if (obj.method && obj.method.startsWith("codex/event/")) {
+            if (obj.params && obj.params.msg) {
+              handleEventMsg(obj.params.msg, obj.params.id || obj.params.turnId || null);
+            }
+            return;
+          }
+          if (obj.method) {
+            if (isDebug()) {
+              logLine("<<", line);
+            }
+            return;
+          }
+          if (obj.error && obj.error.message) {
+            logLine("error", obj.error.message);
+          }
+        };
+
+        const resetSessionState = () => {
+          initRequested = false;
+          initialized = false;
+          initRequestId = null;
+          threadRequested = false;
+          threadRequestId = null;
+          threadId = null;
+          pendingInputs.length = 0;
+          endStream();
+        };
+
+        const scheduleReconnect = () => {
+          if (reconnectTimer) return;
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            connect();
+          }, 1000);
+        };
+
+        const connect = () => {
+          if (connectInFlight) return;
+          if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+            return;
+          }
+          connectInFlight = true;
+          setStatus("connecting...");
+          socket = new WebSocket(wsUrl);
+
+          socket.addEventListener("open", () => {
+            connectInFlight = false;
+            setStatus("connected");
+            logSystem("--", "connected");
+            ensureSession();
+            flushInputs();
+          });
+
+          socket.addEventListener("close", (event) => {
+            connectInFlight = false;
+            setStatus("disconnected");
+            const reason = event.reason ? ` reason=${event.reason}` : "";
+            logSystem("--", `closed code=${event.code}${reason}`);
+            resetSessionState();
+            scheduleReconnect();
+          });
+
+          socket.addEventListener("error", () => {
+            connectInFlight = false;
+            setStatus("error");
+            logLine("!!", "WebSocket error");
+          });
+
+          socket.addEventListener("message", (event) => {
+            const handleText = (text) => {
+              if (!text) return;
+              if (text.includes("\n")) {
+                text
+                  .split("\n")
+                  .map((line) => line.trim())
+                  .filter(Boolean)
+                  .forEach(handleIncoming);
+              } else {
+                handleIncoming(text.trim());
+              }
+            };
+            if (typeof event.data === "string") {
+              handleText(event.data);
+              return;
+            }
+            if (event.data instanceof Blob) {
+              event.data.text().then(handleText).catch(() => {
+                logLine("!!", "failed to read blob message");
+              });
+              return;
+            }
+            if (event.data instanceof ArrayBuffer) {
+              handleText(new TextDecoder().decode(event.data));
+              return;
+            }
+            if (ArrayBuffer.isView(event.data)) {
+              handleText(new TextDecoder().decode(event.data.buffer));
+              return;
+            }
+            logLine("!!", "unknown message type");
+          });
+        };
+
+        sendBtn.addEventListener("click", sendFromInput);
+
+        payloadInput.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            sendFromInput();
+          }
+        });
+
+        initBtn.addEventListener("click", () => {
+          resetSessionState();
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            connect();
+            return;
+          }
+          ensureSession();
+        });
+
+        clearBtn.addEventListener("click", () => {
+          logLines.length = 0;
+          renderLog();
+        });
+
+        payloadInput.value = "";
+        connect();
+      })();
+    </script>
+  </body>
+</html>
