@@ -6,240 +6,377 @@
     <title>Vorpal Terminal</title>
     <style>
       :root {
-        --bg: #f3f5f9;
-        --bg-2: #e6ebf3;
-        --panel: #ffffff;
-        --panel-2: #f7f9fc;
-        --ink: #0f172a;
-        --muted: #4b5563;
-        --accent: #0ea5a4;
-        --accent-2: #2563eb;
-        --danger: #b42318;
-        --border: #d7dde8;
-        --mono: "JetBrains Mono", "SFMono-Regular", "Consolas", "Menlo", monospace;
-        --sans: "Space Grotesk", "IBM Plex Sans", "Segoe UI", sans-serif;
-      }
-
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #0b0f1a;
-          --bg-2: #0f1a2f;
-          --panel: #0f1628;
-          --panel-2: #111b32;
-          --ink: #e6edf6;
-          --muted: #93a4bf;
-          --accent: #41f2b3;
-          --accent-2: #5ab6ff;
-          --danger: #ff6b6b;
-          --border: #1c2a46;
-        }
+        --bg: #101012;
+        --bg-soft: #18181b;
+        --input-bg: #0e0e11;
+        --fg: #d3d7cf;
+        --muted: #8a8f86;
+        --accent: #76ff7a;
+        --danger: #ff7777;
+        --border: #2a2f2f;
+        --mono: "JetBrains Mono", "Fira Code", "SFMono-Regular", "Consolas", "Menlo", monospace;
       }
 
       * {
         box-sizing: border-box;
       }
 
+      html[data-theme="solarized-dark"] {
+        --bg: #002b36;
+        --bg-soft: #073642;
+        --input-bg: #001e26;
+        --fg: #93a1a1;
+        --muted: #7b8a8b;
+        --accent: #2aa198;
+        --danger: #dc322f;
+        --border: #0f4656;
+      }
+
+      html[data-theme="nord"] {
+        --bg: #2e3440;
+        --bg-soft: #3b4252;
+        --input-bg: #262c37;
+        --fg: #d8dee9;
+        --muted: #a9b5c8;
+        --accent: #88c0d0;
+        --danger: #bf616a;
+        --border: #4c566a;
+      }
+
+      html[data-theme="paper-light"] {
+        --bg: #f4f0e6;
+        --bg-soft: #ebe4d6;
+        --input-bg: #fffef8;
+        --fg: #2b2b2b;
+        --muted: #6c6b68;
+        --accent: #00796b;
+        --danger: #b23c3c;
+        --border: #d4cbb7;
+      }
+
+      html,
       body {
         margin: 0;
-        min-height: 100vh;
-        color: var(--ink);
-        font-family: var(--sans);
-        background: radial-gradient(900px 500px at 10% 10%, var(--bg-2) 0%, transparent 60%),
-          radial-gradient(700px 500px at 90% 20%, rgba(37, 99, 235, 0.18) 0%, transparent 55%),
-          linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 100%);
+        width: 100%;
+        height: 100%;
       }
 
-      .page {
-        max-width: 1100px;
-        margin: 28px auto 60px;
-        padding: 0 20px;
+      body {
+        overflow: hidden;
+        color: var(--fg);
+        font-family: var(--mono);
+        background: var(--bg);
       }
 
-      header {
+      .terminal-app {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        width: 100vw;
+        height: 100vh;
+        background: radial-gradient(circle at top right, rgba(255, 255, 255, 0.04), transparent 40%), var(--bg);
+      }
+
+      .term-bar {
         display: flex;
         flex-wrap: wrap;
         justify-content: space-between;
         align-items: center;
-        gap: 16px;
-        margin-bottom: 18px;
-      }
-
-      h1 {
-        margin: 0;
-        font-weight: 600;
-        font-size: 26px;
-        letter-spacing: 0.4px;
-      }
-
-      .tag {
-        font-family: var(--mono);
-        font-size: 12px;
-        padding: 6px 10px;
-        border-radius: 999px;
-        background: linear-gradient(90deg, var(--accent), var(--accent-2));
-        color: #08131f;
-        font-weight: 700;
-      }
-
-      .terminal {
-        background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
-        border: 1px solid var(--border);
-        border-radius: 14px;
-        box-shadow: 0 16px 40px rgba(15, 23, 42, 0.18);
-        padding: 16px;
-      }
-
-      .toolbar {
-        display: flex;
-        flex-wrap: wrap;
         gap: 10px;
-        align-items: center;
-        margin-bottom: 12px;
+        padding: 10px 14px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg-soft);
       }
 
-      .toolbar label {
-        font-size: 11px;
+      .window-dots {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      .window-dots span {
+        width: 11px;
+        height: 11px;
+        border-radius: 50%;
+        border: 1px solid rgba(0, 0, 0, 0.25);
+      }
+
+      .window-dots .red {
+        background: #ff5f56;
+      }
+
+      .window-dots .yellow {
+        background: #ffbd2e;
+      }
+
+      .window-dots .green {
+        background: #27c93f;
+      }
+
+      .title-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 16px;
+        flex: 1;
+        min-width: 280px;
+      }
+
+      .title {
+        color: var(--accent);
+        text-transform: lowercase;
+        letter-spacing: 0.03em;
+      }
+
+      .controls {
+        display: inline-flex;
+        align-items: center;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .control-label {
+        font-size: 12px;
         text-transform: uppercase;
-        letter-spacing: 1px;
+        letter-spacing: 0.08em;
         color: var(--muted);
       }
 
-      input,
       textarea,
+      select,
       button {
         font-family: var(--mono);
       }
 
-      input[type="text"],
+      select,
       textarea {
-        background: var(--panel);
-        color: var(--ink);
+        background: var(--input-bg);
+        color: var(--fg);
         border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 10px 12px;
+        border-radius: 6px;
+        padding: 10px;
         font-size: 13px;
         outline: none;
       }
 
-      input[type="text"] {
-        min-width: 240px;
+      select {
+        min-width: 150px;
+      }
+
+      select:focus,
+      textarea:focus {
+        border-color: var(--accent);
       }
 
       button {
-        border: none;
+        border: 1px solid var(--border);
         padding: 10px 14px;
-        border-radius: 10px;
-        font-size: 12px;
-        font-weight: 700;
+        border-radius: 6px;
+        font-size: 13px;
+        background: var(--bg-soft);
+        color: var(--fg);
         cursor: pointer;
-        background: linear-gradient(90deg, var(--accent), var(--accent-2));
-        color: #08131f;
-        transition: transform 0.15s ease, box-shadow 0.15s ease;
-        box-shadow: 0 8px 18px rgba(90, 182, 255, 0.2);
+        transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
       }
 
       button:hover {
-        transform: translateY(-1px);
-        box-shadow: 0 10px 20px rgba(90, 182, 255, 0.28);
-      }
-
-      button.secondary {
-        background: var(--panel-2);
-        color: var(--ink);
-        border: 1px solid var(--border);
-        box-shadow: none;
+        border-color: var(--accent);
+        color: var(--accent);
       }
 
       button.danger {
-        background: #fef2f2;
         color: var(--danger);
-        border: 1px solid #fecaca;
-        box-shadow: none;
       }
 
-      .status {
-        font-family: var(--mono);
+      button.danger:hover {
+        border-color: var(--danger);
+        color: var(--danger);
+      }
+
+      .debug-toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
         font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
         color: var(--muted);
       }
 
-      .log {
-        font-family: var(--mono);
+      .debug-toggle input {
+        accent-color: var(--accent);
+      }
+
+      .status {
         font-size: 12px;
-        background: var(--panel);
-        border: 1px solid var(--border);
-        border-radius: 10px;
-        padding: 12px;
-        height: 360px;
+        color: var(--muted);
+        text-transform: lowercase;
+      }
+
+      .status[data-state="connected"] {
+        color: var(--accent);
+      }
+
+      .status[data-state="error"] {
+        color: var(--danger);
+      }
+
+      .status[data-state="connecting"] {
+        color: #ffbd2e;
+      }
+
+      .status[data-state="disconnected"] {
+        color: var(--danger);
+      }
+
+      .log-wrap {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .log-wrap::before {
+        content: "";
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        background: linear-gradient(to bottom, rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+        background-size: 100% 3px;
+        opacity: 0.24;
+        z-index: 1;
+      }
+
+      .log {
+        position: relative;
+        z-index: 0;
+        height: 100%;
         overflow: auto;
         white-space: pre-wrap;
+        padding: 14px;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+
+      .log::-webkit-scrollbar {
+        width: 10px;
+      }
+
+      .log::-webkit-scrollbar-thumb {
+        background: var(--border);
+      }
+
+      .composer {
+        display: grid;
+        gap: 8px;
+        border-top: 1px solid var(--border);
+        background: var(--bg-soft);
+        padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
       }
 
       .input-row {
         display: grid;
         grid-template-columns: auto 1fr auto;
         gap: 10px;
-        align-items: center;
-        margin-top: 12px;
+        align-items: end;
       }
 
       .prompt {
-        font-family: var(--mono);
         color: var(--accent);
         font-weight: 700;
+        font-size: 16px;
+        user-select: none;
+        padding-bottom: 8px;
       }
 
       textarea {
-        min-height: 56px;
+        min-height: 72px;
+        max-height: 32vh;
         resize: vertical;
       }
 
       .hint {
-        margin-top: 8px;
         font-size: 12px;
         color: var(--muted);
       }
 
-      @media (max-width: 720px) {
+      @media (max-width: 900px) {
+        .term-bar {
+          align-items: stretch;
+          justify-content: flex-start;
+        }
+
+        .title-wrap {
+          min-width: 0;
+        }
+
+        .controls {
+          justify-content: flex-start;
+        }
+      }
+
+      @media (max-width: 640px) {
         .input-row {
-          grid-template-columns: 1fr;
+          grid-template-columns: 1fr auto;
         }
 
         .prompt {
           display: none;
         }
       }
+
+      @media (max-width: 520px) {
+        .input-row {
+          grid-template-columns: 1fr;
+        }
+
+        #sendBtn {
+          width: 100%;
+        }
+      }
     </style>
   </head>
   <body>
-    <div class="page">
-      <header>
-        <div>
-          <h1>Vorpal CLI</h1>
-          <div class="hint">AI Security Agent</div>
+    <main class="terminal-app">
+      <header class="term-bar">
+        <div class="window-dots" aria-hidden="true">
+          <span class="red"></span>
+          <span class="yellow"></span>
+          <span class="green"></span>
+        </div>
+
+        <div class="title-wrap">
+          <div class="title">vorpal-cli // ai security agent</div>
+          <div id="status" class="status">status: idle</div>
+        </div>
+
+        <div class="controls">
+          <label class="debug-toggle" for="debugToggle">
+            debug
+            <input id="debugToggle" type="checkbox" />
+          </label>
+          <label class="control-label" for="themeSelect">theme</label>
+          <select id="themeSelect" aria-label="Color scheme">
+            <option value="xterm-dark">XTerm Dark</option>
+            <option value="solarized-dark">Solarized Dark</option>
+            <option value="nord">Nord</option>
+            <option value="paper-light">Paper Light</option>
+          </select>
+          <button id="initBtn" type="button">New Conversation</button>
+          <button id="clearBtn" type="button" class="danger">Clear</button>
         </div>
       </header>
 
-      <section class="terminal">
-        <div class="toolbar">
-          <button id="initBtn" class="secondary">New Conversation</button>
-          <button id="clearBtn" class="danger">Clear</button>
-          <label for="debugToggle">Debug</label>
-          <input id="debugToggle" type="checkbox" />
-          <div id="status" class="status">Status: idle</div>
-        </div>
-
+      <section class="log-wrap">
         <div id="log" class="log"></div>
+      </section>
 
+      <div class="composer">
         <div class="input-row">
           <div class="prompt">&gt;</div>
-          <textarea id="payload" spellcheck="false"></textarea>
-          <button id="sendBtn" class="secondary">Send</button>
+          <textarea id="payload" spellcheck="false" placeholder="Type a message..."></textarea>
+          <button id="sendBtn" type="button">Send</button>
         </div>
-
-        <div class="hint">Type a message and press Enter. Shift+Enter for a new line.</div>
-      </section>
-    </div>
+        <div class="hint">Enter to send. Shift+Enter for a new line.</div>
+      </div>
+    </main>
 
     <script>
       (() => {
@@ -247,6 +384,7 @@
         const initBtn = document.getElementById("initBtn");
         const clearBtn = document.getElementById("clearBtn");
         const debugToggle = document.getElementById("debugToggle");
+        const themeSelect = document.getElementById("themeSelect");
         const payloadInput = document.getElementById("payload");
         const logEl = document.getElementById("log");
         const statusEl = document.getElementById("status");
@@ -269,8 +407,36 @@
         let lastAssistantAt = 0;
         let reconnectTimer = null;
         let connectInFlight = false;
+        const themeStorageKey = "vorpal-theme";
+        const defaultTheme = "xterm-dark";
 
         const isDebug = () => debugToggle && debugToggle.checked;
+        const isKnownTheme = (theme) =>
+          !!themeSelect && Array.from(themeSelect.options).some((option) => option.value === theme);
+        const readStoredTheme = () => {
+          try {
+            return window.localStorage.getItem(themeStorageKey);
+          } catch (_error) {
+            // localStorage may be unavailable (private mode or strict browser policies).
+            return null;
+          }
+        };
+        const persistTheme = (theme) => {
+          try {
+            window.localStorage.setItem(themeStorageKey, theme);
+          } catch (_error) {
+            // Ignore persistence failures; theme still applies for the current session.
+          }
+        };
+        const applyTheme = (theme) => {
+          const nextTheme = isKnownTheme(theme) ? theme : defaultTheme;
+          document.documentElement.setAttribute("data-theme", nextTheme);
+          if (themeSelect && themeSelect.value !== nextTheme) {
+            themeSelect.value = nextTheme;
+          }
+          persistTheme(nextTheme);
+        };
+
         const showInterim = false;
         const logSystem = (prefix, line) => {
           if (isDebug()) {
@@ -311,7 +477,8 @@
         };
 
         const setStatus = (text) => {
-          statusEl.textContent = `Status: ${text}`;
+          statusEl.textContent = `status: ${text}`;
+          statusEl.dataset.state = text.replace(/\.+$/, "").trim().toLowerCase();
         };
 
         const sendJson = (obj) => {
@@ -664,6 +831,13 @@
           renderLog();
         });
 
+        if (themeSelect) {
+          themeSelect.addEventListener("change", () => {
+            applyTheme(themeSelect.value);
+          });
+        }
+
+        applyTheme(readStoredTheme() || defaultTheme);
         payloadInput.value = "";
         connect();
       })();
