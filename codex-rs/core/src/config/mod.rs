@@ -4241,10 +4241,13 @@ model_verbosity = "high"
         let openai_custom_provider = ModelProviderInfo {
             name: "OpenAI custom".to_string(),
             base_url: Some("https://api.openai.com/v1".to_string()),
+            endpoint: None,
             env_key: Some("OPENAI_API_KEY".to_string()),
             wire_api: crate::WireApi::Responses,
             env_key_instructions: None,
             experimental_bearer_token: None,
+            azure_entra_auth: false,
+            azure_entra_scope: None,
             query_params: None,
             http_headers: None,
             env_http_headers: None,

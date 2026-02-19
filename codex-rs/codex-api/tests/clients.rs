@@ -124,6 +124,7 @@ fn provider(name: &str) -> Provider {
     Provider {
         name: name.to_string(),
         base_url: "https://example.com/v1".to_string(),
+        responses_endpoint: None,
         query_params: None,
         headers: HeaderMap::new(),
         retry: codex_api::provider::RetryConfig {

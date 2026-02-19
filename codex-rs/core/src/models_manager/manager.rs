@@ -212,7 +212,7 @@ impl ModelsManager {
         let auth = self.auth_manager.auth().await;
         let auth_mode = self.auth_manager.auth_mode();
         let api_provider = self.provider.to_api_provider(auth_mode)?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
+        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider).await?;
         let transport = ReqwestTransport::new(build_reqwest_client());
         let client = ModelsClient::new(transport, api_provider, api_auth);
 
@@ -424,6 +424,9 @@ mod tests {
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
+            endpoint: None,
+            azure_entra_auth: false,
+            azure_entra_scope: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,

@@ -15,6 +15,9 @@ use crate::error::UnexpectedResponseError;
 use crate::error::UsageLimitReachedError;
 use crate::model_provider_info::ModelProviderInfo;
 use crate::token_data::PlanType;
+use tokio::process::Command;
+
+const AZURE_OPENAI_ENTRA_TOKEN_ENV_VAR: &str = "AZURE_OPENAI_ENTRA_TOKEN";
 
 pub(crate) fn map_api_error(err: ApiError) -> CodexErr {
     match err {
@@ -236,7 +239,7 @@ fn extract_header(headers: Option<&HeaderMap>, name: &str) -> Option<String> {
     })
 }
 
-pub(crate) fn auth_provider_from_auth(
+pub(crate) async fn auth_provider_from_auth(
     auth: Option<CodexAuth>,
     provider: &ModelProviderInfo,
 ) -> crate::error::Result<CoreAuthProvider> {
@@ -248,6 +251,14 @@ pub(crate) fn auth_provider_from_auth(
     }
 
     if let Some(token) = provider.experimental_bearer_token.clone() {
+        return Ok(CoreAuthProvider {
+            token: Some(token),
+            account_id: None,
+        });
+    }
+
+    if let Some(scope) = provider.azure_entra_scope() {
+        let token = load_azure_entra_token(scope.as_str()).await?;
         return Ok(CoreAuthProvider {
             token: Some(token),
             account_id: None,
@@ -266,6 +277,70 @@ pub(crate) fn auth_provider_from_auth(
             account_id: None,
         })
     }
+}
+
+async fn load_azure_entra_token(scope: &str) -> crate::error::Result<String> {
+    if let Ok(token) = std::env::var(AZURE_OPENAI_ENTRA_TOKEN_ENV_VAR)
+        && !token.trim().is_empty()
+    {
+        return Ok(token.trim().to_string());
+    }
+
+    let output = match run_azure_cli_access_token(["--scope", scope]).await {
+        Ok(output) => output,
+        Err(err) => {
+            if let Some(resource) = scope.strip_suffix("/.default") {
+                run_azure_cli_access_token(["--resource", resource]).await?
+            } else {
+                return Err(err);
+            }
+        }
+    };
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let details = if stderr.is_empty() {
+            "no error details".to_string()
+        } else {
+            stderr
+        };
+        return Err(CodexErr::Fatal(format!(
+            "Azure Entra auth is enabled but `az account get-access-token` failed for scope `{scope}`: {details}"
+        )));
+    }
+
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if token.is_empty() {
+        return Err(CodexErr::Fatal(format!(
+            "Azure Entra auth is enabled but Azure CLI returned an empty token for scope `{scope}`."
+        )));
+    }
+
+    Ok(token)
+}
+
+async fn run_azure_cli_access_token(
+    scope_or_resource: [&str; 2],
+) -> crate::error::Result<std::process::Output> {
+    Command::new("az")
+        .args([
+            "account",
+            "get-access-token",
+            scope_or_resource[0],
+            scope_or_resource[1],
+            "--query",
+            "accessToken",
+            "--output",
+            "tsv",
+        ])
+        .output()
+        .await
+        .map_err(|err| {
+            CodexErr::Fatal(format!(
+                "Azure Entra auth is enabled but Azure CLI token retrieval failed: {err}. \
+Install Azure CLI and run `az login`, or set {AZURE_OPENAI_ENTRA_TOKEN_ENV_VAR}."
+            ))
+        })
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,5 +369,71 @@ impl ApiAuthProvider for CoreAuthProvider {
 
     fn account_id(&self) -> Option<String> {
         self.account_id.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    struct EnvVarGuard {
+        key: &'static str,
+        original: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let original = std::env::var(key).ok();
+            // SAFETY: tests run serially and restore env after assertions.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            // SAFETY: tests run serially and restore env after assertions.
+            unsafe {
+                match &self.original {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn azure_entra_auth_uses_env_token_when_available() {
+        let _guard = EnvVarGuard::set(AZURE_OPENAI_ENTRA_TOKEN_ENV_VAR, "test-entra-token");
+        let provider = ModelProviderInfo {
+            name: "Azure".to_string(),
+            base_url: None,
+            endpoint: Some("https://example.azure.com/openai/responses".to_string()),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            azure_entra_auth: true,
+            azure_entra_scope: None,
+            wire_api: crate::WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        };
+
+        let auth = auth_provider_from_auth(None, &provider)
+            .await
+            .expect("azure token should resolve from env");
+
+        assert_eq!(auth.bearer_token(), Some("test-entra-token".to_string()));
+        assert_eq!(auth.account_id(), None);
     }
 }

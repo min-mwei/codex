@@ -639,6 +639,7 @@ mod tests {
         let provider = Provider {
             name: "test".to_string(),
             base_url: "http://localhost".to_string(),
+            responses_endpoint: None,
             query_params: Some(HashMap::new()),
             headers: HeaderMap::new(),
             retry: crate::provider::RetryConfig {
@@ -766,6 +767,7 @@ mod tests {
         let provider = Provider {
             name: "test".to_string(),
             base_url: "http://localhost".to_string(),
+            responses_endpoint: None,
             query_params: Some(HashMap::new()),
             headers: HeaderMap::new(),
             retry: crate::provider::RetryConfig {

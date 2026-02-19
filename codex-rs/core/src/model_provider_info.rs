@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::time::Duration;
+use url::Url;
 
 const DEFAULT_STREAM_IDLE_TIMEOUT_MS: u64 = 300_000;
 const DEFAULT_STREAM_MAX_RETRIES: u64 = 5;
@@ -62,6 +63,11 @@ pub struct ModelProviderInfo {
     pub name: String,
     /// Base URL for the provider's OpenAI-compatible API.
     pub base_url: Option<String>,
+    /// Fully qualified endpoint URL for Responses requests.
+    ///
+    /// When set, Codex sends `POST` requests to this URL directly for
+    /// `/responses`, including any query string such as Azure API versions.
+    pub endpoint: Option<String>,
     /// Environment variable that stores the user's API key for this provider.
     pub env_key: Option<String>,
 
@@ -73,6 +79,16 @@ pub struct ModelProviderInfo {
     /// config is discouraged in favor of `env_key` for security reasons, but
     /// this may be necessary when using this programmatically.
     pub experimental_bearer_token: Option<String>,
+
+    /// When set, fetch an Azure Entra bearer token using Azure CLI (`az`)
+    /// for each request attempt instead of using `env_key` or OpenAI auth.
+    #[serde(default)]
+    pub azure_entra_auth: bool,
+
+    /// Optional Azure Entra scope override. Defaults to
+    /// `https://cognitiveservices.azure.com/.default` when
+    /// `azure_entra_auth = true`.
+    pub azure_entra_scope: Option<String>,
 
     /// Which wire protocol this provider expects.
     #[serde(default)]
@@ -114,6 +130,46 @@ pub struct ModelProviderInfo {
 }
 
 impl ModelProviderInfo {
+    fn derive_base_url_from_endpoint(endpoint: &str) -> Option<String> {
+        let mut url = Url::parse(endpoint).ok()?;
+        let mut segments = url
+            .path_segments()
+            .map(|parts| parts.map(str::to_string).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        if segments
+            .last()
+            .is_some_and(|segment| segment == "responses")
+        {
+            let _ = segments.pop();
+        }
+
+        let path = if segments.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{}", segments.join("/"))
+        };
+        url.set_path(&path);
+        url.set_query(None);
+        url.set_fragment(None);
+
+        let base = url.to_string();
+        Some(base.trim_end_matches('/').to_string())
+    }
+
+    pub fn azure_entra_scope(&self) -> Option<String> {
+        if !self.azure_entra_auth {
+            return None;
+        }
+
+        Some(
+            self.azure_entra_scope
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| "https://cognitiveservices.azure.com/.default".to_string()),
+        )
+    }
+
     fn build_header_map(&self) -> crate::error::Result<HeaderMap> {
         let capacity = self.http_headers.as_ref().map_or(0, HashMap::len)
             + self.env_http_headers.as_ref().map_or(0, HashMap::len);
@@ -153,6 +209,11 @@ impl ModelProviderInfo {
         let base_url = self
             .base_url
             .clone()
+            .or_else(|| {
+                self.endpoint
+                    .as_deref()
+                    .and_then(Self::derive_base_url_from_endpoint)
+            })
             .unwrap_or_else(|| default_base_url.to_string());
 
         let headers = self.build_header_map()?;
@@ -167,6 +228,7 @@ impl ModelProviderInfo {
         Ok(ApiProvider {
             name: self.name.clone(),
             base_url,
+            responses_endpoint: self.endpoint.clone(),
             query_params: self.query_params.clone(),
             headers,
             retry,
@@ -226,9 +288,12 @@ impl ModelProviderInfo {
             base_url: std::env::var("OPENAI_BASE_URL")
                 .ok()
                 .filter(|v| !v.trim().is_empty()),
+            endpoint: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
+            azure_entra_auth: false,
+            azure_entra_scope: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(
@@ -314,9 +379,12 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
     ModelProviderInfo {
         name: "gpt-oss".into(),
         base_url: Some(base_url.into()),
+        endpoint: None,
         env_key: None,
         env_key_instructions: None,
         experimental_bearer_token: None,
+        azure_entra_auth: false,
+        azure_entra_scope: None,
         wire_api,
         query_params: None,
         http_headers: None,
@@ -343,9 +411,12 @@ base_url = "http://localhost:11434/v1"
         let expected_provider = ModelProviderInfo {
             name: "Ollama".into(),
             base_url: Some("http://localhost:11434/v1".into()),
+            endpoint: None,
             env_key: None,
             env_key_instructions: None,
             experimental_bearer_token: None,
+            azure_entra_auth: false,
+            azure_entra_scope: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: None,
@@ -365,6 +436,40 @@ base_url = "http://localhost:11434/v1"
     fn test_deserialize_azure_model_provider_toml() {
         let azure_provider_toml = r#"
 name = "Azure"
+endpoint = "https://xxxxx.openai.azure.com/openai/responses?api-version=2025-04-01-preview"
+azure_entra_auth = true
+        "#;
+        let expected_provider = ModelProviderInfo {
+            name: "Azure".into(),
+            base_url: None,
+            endpoint: Some(
+                "https://xxxxx.openai.azure.com/openai/responses?api-version=2025-04-01-preview"
+                    .into(),
+            ),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            azure_entra_auth: true,
+            azure_entra_scope: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        };
+
+        let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
+        assert_eq!(expected_provider, provider);
+    }
+
+    #[test]
+    fn test_deserialize_azure_model_provider_toml_with_api_key() {
+        let azure_provider_toml = r#"
+name = "Azure"
 base_url = "https://xxxxx.openai.azure.com/openai"
 env_key = "AZURE_OPENAI_API_KEY"
 query_params = { api-version = "2025-04-01-preview" }
@@ -372,9 +477,12 @@ query_params = { api-version = "2025-04-01-preview" }
         let expected_provider = ModelProviderInfo {
             name: "Azure".into(),
             base_url: Some("https://xxxxx.openai.azure.com/openai".into()),
+            endpoint: None,
             env_key: Some("AZURE_OPENAI_API_KEY".into()),
             env_key_instructions: None,
             experimental_bearer_token: None,
+            azure_entra_auth: false,
+            azure_entra_scope: None,
             wire_api: WireApi::Responses,
             query_params: Some(maplit::hashmap! {
                 "api-version".to_string() => "2025-04-01-preview".to_string(),
@@ -404,9 +512,12 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
         let expected_provider = ModelProviderInfo {
             name: "Example".into(),
             base_url: Some("https://example.com".into()),
+            endpoint: None,
             env_key: Some("API_KEY".into()),
             env_key_instructions: None,
             experimental_bearer_token: None,
+            azure_entra_auth: false,
+            azure_entra_scope: None,
             wire_api: WireApi::Responses,
             query_params: None,
             http_headers: Some(maplit::hashmap! {
@@ -424,6 +535,46 @@ env_http_headers = { "X-Example-Env-Header" = "EXAMPLE_ENV_VAR" }
 
         let provider: ModelProviderInfo = toml::from_str(azure_provider_toml).unwrap();
         assert_eq!(expected_provider, provider);
+    }
+
+    #[test]
+    fn api_provider_derives_base_url_from_endpoint() {
+        let provider = ModelProviderInfo {
+            name: "Azure".into(),
+            base_url: None,
+            endpoint: Some(
+                "https://foo.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview"
+                    .to_string(),
+            ),
+            env_key: None,
+            env_key_instructions: None,
+            experimental_bearer_token: None,
+            azure_entra_auth: true,
+            azure_entra_scope: None,
+            wire_api: WireApi::Responses,
+            query_params: None,
+            http_headers: None,
+            env_http_headers: None,
+            request_max_retries: None,
+            stream_max_retries: None,
+            stream_idle_timeout_ms: None,
+            requires_openai_auth: false,
+            supports_websockets: false,
+        };
+
+        let api_provider = provider
+            .to_api_provider(None)
+            .expect("provider should convert");
+        assert_eq!(
+            api_provider.base_url,
+            "https://foo.cognitiveservices.azure.com/openai"
+        );
+        assert_eq!(
+            api_provider.responses_endpoint.as_deref(),
+            Some(
+                "https://foo.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview"
+            )
+        );
     }
 
     #[test]

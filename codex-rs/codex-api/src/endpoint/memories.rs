@@ -142,6 +142,7 @@ mod tests {
         Provider {
             name: "test".to_string(),
             base_url: base_url.to_string(),
+            responses_endpoint: None,
             query_params: None,
             headers: HeaderMap::new(),
             retry: RetryConfig {

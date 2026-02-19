@@ -382,7 +382,7 @@ impl ModelClient {
             .state
             .provider
             .to_api_provider(auth.as_ref().map(CodexAuth::auth_mode))?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.state.provider)?;
+        let api_auth = auth_provider_from_auth(auth.clone(), &self.state.provider).await?;
         Ok(CurrentClientSetup {
             auth,
             api_provider,

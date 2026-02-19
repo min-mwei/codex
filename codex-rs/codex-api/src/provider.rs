@@ -43,6 +43,7 @@ impl RetryConfig {
 pub struct Provider {
     pub name: String,
     pub base_url: String,
+    pub responses_endpoint: Option<String>,
     pub query_params: Option<HashMap<String, String>>,
     pub headers: HeaderMap,
     pub retry: RetryConfig,
@@ -51,6 +52,12 @@ pub struct Provider {
 
 impl Provider {
     pub fn url_for_path(&self, path: &str) -> String {
+        if path.trim_matches('/') == "responses"
+            && let Some(endpoint) = self.responses_endpoint.as_ref()
+        {
+            return endpoint.clone();
+        }
+
         let base = self.base_url.trim_end_matches('/');
         let path = path.trim_start_matches('/');
         let mut url = if path.is_empty() {
@@ -86,7 +93,12 @@ impl Provider {
     }
 
     pub fn is_azure_responses_endpoint(&self) -> bool {
-        is_azure_responses_wire_base_url(&self.name, Some(&self.base_url))
+        is_azure_responses_wire_base_url(
+            &self.name,
+            self.responses_endpoint
+                .as_deref()
+                .or(Some(self.base_url.as_str())),
+        ) || is_azure_responses_wire_base_url(&self.name, Some(self.base_url.as_str()))
     }
 
     pub fn websocket_url_for_path(&self, path: &str) -> Result<Url, url::ParseError> {
@@ -130,6 +142,7 @@ fn matches_azure_responses_base_url(base_url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pretty_assertions::assert_eq;
 
     #[test]
     fn detects_azure_responses_base_urls() {
@@ -166,5 +179,32 @@ mod tests {
                 "expected {base_url} not to be detected as Azure"
             );
         }
+    }
+
+    #[test]
+    fn responses_path_uses_endpoint_override() {
+        let provider = Provider {
+            name: "azure".to_string(),
+            base_url: "https://unused.example.com".to_string(),
+            responses_endpoint: Some(
+                "https://foo.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview"
+                    .to_string(),
+            ),
+            query_params: None,
+            headers: HeaderMap::new(),
+            retry: RetryConfig {
+                max_attempts: 1,
+                base_delay: Duration::from_millis(1),
+                retry_429: false,
+                retry_5xx: false,
+                retry_transport: false,
+            },
+            stream_idle_timeout: Duration::from_secs(1),
+        };
+
+        assert_eq!(
+            provider.url_for_path("responses"),
+            "https://foo.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview"
+        );
     }
 }

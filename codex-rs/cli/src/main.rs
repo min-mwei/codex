@@ -49,7 +49,7 @@ use codex_core::features::Stage;
 use codex_core::features::is_known_feature_key;
 use codex_core::terminal::TerminalName;
 
-/// Codex CLI
+/// Vorpal CLI
 ///
 /// If no subcommand is specified, options will be forwarded to the interactive CLI.
 #[derive(Debug, Parser)]
@@ -59,10 +59,10 @@ use codex_core::terminal::TerminalName;
     // If a sub‑command is given, ignore requirements of the default args.
     subcommand_negates_reqs = true,
     // The executable is sometimes invoked via a platform‑specific name like
-    // `codex-x86_64-unknown-linux-musl`, but the help output should always use
-    // the generic `codex` command name that users run.
-    bin_name = "codex",
-    override_usage = "codex [OPTIONS] [PROMPT]\n       codex [OPTIONS] <COMMAND> [ARGS]"
+    // `vorpal-x86_64-unknown-linux-musl`, but the help output should always use
+    // the generic `vorpal` command name that users run.
+    bin_name = "vorpal",
+    override_usage = "vorpal [OPTIONS] [PROMPT]\n       vorpal [OPTIONS] <COMMAND> [ARGS]"
 )]
 struct MultitoolCli {
     #[clap(flatten)]
@@ -70,6 +70,18 @@ struct MultitoolCli {
 
     #[clap(flatten)]
     pub feature_toggles: FeatureToggles,
+
+    /// Use Azure OpenAI Responses endpoint with Entra auth defaults.
+    ///
+    /// Equivalent to:
+    /// - `model_provider = "azureai"`
+    /// - `model = "gpt-5.2-codex"`
+    /// - `model_providers.azureai.endpoint = <URL>`
+    /// - `model_providers.azureai.azure_entra_auth = true`
+    /// - `model_providers.azureai.wire_api = "responses"`
+    /// - `model_providers.azureai.supports_websockets = true`
+    #[arg(long = "azureai", value_name = "URL", global = true)]
+    azureai_endpoint: Option<String>,
 
     #[clap(flatten)]
     interactive: TuiCli,
@@ -260,7 +272,7 @@ struct LoginCommand {
 
     #[arg(
         long = "with-api-key",
-        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`)"
+        help = "Read the API key from stdin (e.g. `printenv OPENAI_API_KEY | vorpal login --with-api-key`)"
     )]
     with_api_key: bool,
 
@@ -396,6 +408,7 @@ fn format_exit_messages(exit_info: AppExitInfo, color_enabled: bool) -> Vec<Stri
     if let Some(resume_cmd) =
         codex_core::util::resume_command(thread_name.as_deref(), conversation_id)
     {
+        let resume_cmd = resume_cmd.replacen("codex ", "vorpal ", 1);
         let command = if color_enabled {
             resume_cmd.cyan().to_string()
         } else {
@@ -556,9 +569,12 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
     let MultitoolCli {
         config_overrides: mut root_config_overrides,
         feature_toggles,
+        azureai_endpoint,
         mut interactive,
         subcommand,
     } = MultitoolCli::parse();
+
+    apply_azureai_overrides(&mut root_config_overrides, azureai_endpoint.as_deref());
 
     // Fold --enable/--disable into config overrides so they flow to all subcommands.
     let toggle_overrides = feature_toggles.to_overrides()?;
@@ -581,7 +597,7 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
             codex_exec::run_main(exec_cli, codex_linux_sandbox_exe).await?;
         }
         Some(Subcommand::Review(review_args)) => {
-            let mut exec_cli = ExecCli::try_parse_from(["codex", "exec"])?;
+            let mut exec_cli = ExecCli::try_parse_from(["vorpal", "exec"])?;
             exec_cli.command = Some(ExecCommand::Review(review_args));
             prepend_config_flags(
                 &mut exec_cli.config_overrides,
@@ -684,7 +700,7 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
                         .await;
                     } else if login_cli.api_key.is_some() {
                         eprintln!(
-                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | codex login --with-api-key`."
+                            "The --api-key flag is no longer supported. Pipe the key instead, e.g. `printenv OPENAI_API_KEY | vorpal login --with-api-key`."
                         );
                         std::process::exit(1);
                     } else if login_cli.with_api_key {
@@ -826,6 +842,34 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
     Ok(())
 }
 
+const AZUREAI_PROVIDER_ID: &str = "azureai";
+const AZUREAI_DEFAULT_MODEL: &str = "gpt-5.2-codex";
+
+fn azureai_overrides(endpoint: &str) -> Vec<String> {
+    let provider_prefix = format!("model_providers.{AZUREAI_PROVIDER_ID}");
+    vec![
+        format!("model_provider={AZUREAI_PROVIDER_ID}"),
+        format!("model={AZUREAI_DEFAULT_MODEL}"),
+        format!("{provider_prefix}.name=Azure OpenAI (Entra)"),
+        format!("{provider_prefix}.endpoint={endpoint}"),
+        format!("{provider_prefix}.azure_entra_auth=true"),
+        format!("{provider_prefix}.wire_api=responses"),
+        format!("{provider_prefix}.supports_websockets=true"),
+    ]
+}
+
+fn apply_azureai_overrides(
+    config_overrides: &mut CliConfigOverrides,
+    azureai_endpoint: Option<&str>,
+) {
+    if let Some(endpoint) = azureai_endpoint {
+        // Keep explicit `-c key=value` flags as higher precedence.
+        config_overrides
+            .raw_overrides
+            .splice(0..0, azureai_overrides(endpoint));
+    }
+}
+
 async fn enable_feature_in_config(interactive: &TuiCli, feature: &str) -> anyhow::Result<()> {
     FeatureToggles::validate_feature(feature)?;
     let codex_home = find_codex_home()?;
@@ -927,7 +971,7 @@ fn confirm(prompt: &str) -> std::io::Result<bool> {
     Ok(answer.eq_ignore_ascii_case("y") || answer.eq_ignore_ascii_case("yes"))
 }
 
-/// Build the final `TuiCli` for a `codex resume` invocation.
+/// Build the final `TuiCli` for a `vorpal resume` invocation.
 fn finalize_resume_interactive(
     mut interactive: TuiCli,
     root_config_overrides: CliConfigOverrides,
@@ -937,7 +981,7 @@ fn finalize_resume_interactive(
     resume_cli: TuiCli,
 ) -> TuiCli {
     // Start with the parsed interactive CLI so resume shares the same
-    // configuration surface area as `codex` without additional flags.
+    // configuration surface area as `vorpal` without additional flags.
     let resume_session_id = session_id;
     interactive.resume_picker = resume_session_id.is_none() && !last;
     interactive.resume_last = last;
@@ -953,7 +997,7 @@ fn finalize_resume_interactive(
     interactive
 }
 
-/// Build the final `TuiCli` for a `codex fork` invocation.
+/// Build the final `TuiCli` for a `vorpal fork` invocation.
 fn finalize_fork_interactive(
     mut interactive: TuiCli,
     root_config_overrides: CliConfigOverrides,
@@ -963,7 +1007,7 @@ fn finalize_fork_interactive(
     fork_cli: TuiCli,
 ) -> TuiCli {
     // Start with the parsed interactive CLI so fork shares the same
-    // configuration surface area as `codex` without additional flags.
+    // configuration surface area as `vorpal` without additional flags.
     let fork_session_id = session_id;
     interactive.fork_picker = fork_session_id.is_none() && !last;
     interactive.fork_last = last;
@@ -979,7 +1023,7 @@ fn finalize_fork_interactive(
     interactive
 }
 
-/// Merge flags provided to `codex resume`/`codex fork` so they take precedence over any
+/// Merge flags provided to `vorpal resume`/`vorpal fork` so they take precedence over any
 /// root-level flags. Only overrides fields explicitly set on the subcommand-scoped
 /// CLI. Also appends `-c key=value` overrides with highest precedence.
 fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli) {
@@ -1029,7 +1073,7 @@ fn merge_interactive_cli_flags(interactive: &mut TuiCli, subcommand_cli: TuiCli)
 
 fn print_completion(cmd: CompletionCommand) {
     let mut app = MultitoolCli::command();
-    let name = "codex";
+    let name = "vorpal";
     generate(cmd.shell, &mut app, name, &mut std::io::stdout());
 }
 
@@ -1048,6 +1092,7 @@ mod tests {
             config_overrides: root_overrides,
             subcommand,
             feature_toggles: _,
+            azureai_endpoint: _,
         } = cli;
 
         let Subcommand::Resume(ResumeCommand {
@@ -1077,6 +1122,7 @@ mod tests {
             config_overrides: root_overrides,
             subcommand,
             feature_toggles: _,
+            azureai_endpoint: _,
         } = cli;
 
         let Subcommand::Fork(ForkCommand {
@@ -1095,7 +1141,7 @@ mod tests {
     #[test]
     fn exec_resume_last_accepts_prompt_positional() {
         let cli =
-            MultitoolCli::try_parse_from(["codex", "exec", "--json", "resume", "--last", "2+2"])
+            MultitoolCli::try_parse_from(["vorpal", "exec", "--json", "resume", "--last", "2+2"])
                 .expect("parse should succeed");
 
         let Some(Subcommand::Exec(exec)) = cli.subcommand else {
@@ -1156,7 +1202,7 @@ mod tests {
             lines,
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
-                "To continue this session, run codex resume 123e4567-e89b-12d3-a456-426614174000"
+                "To continue this session, run vorpal resume 123e4567-e89b-12d3-a456-426614174000"
                     .to_string(),
             ]
         );
@@ -1181,7 +1227,7 @@ mod tests {
             lines,
             vec![
                 "Token usage: total=2 input=0 output=2".to_string(),
-                "To continue this session, run codex resume my-thread".to_string(),
+                "To continue this session, run vorpal resume my-thread".to_string(),
             ]
         );
     }
@@ -1189,7 +1235,7 @@ mod tests {
     #[test]
     fn resume_model_flag_applies_when_no_root_flags() {
         let interactive =
-            finalize_resume_from_args(["codex", "resume", "-m", "gpt-5.1-test"].as_ref());
+            finalize_resume_from_args(["vorpal", "resume", "-m", "gpt-5.1-test"].as_ref());
 
         assert_eq!(interactive.model.as_deref(), Some("gpt-5.1-test"));
         assert!(interactive.resume_picker);
@@ -1199,7 +1245,7 @@ mod tests {
 
     #[test]
     fn resume_picker_logic_none_and_not_last() {
-        let interactive = finalize_resume_from_args(["codex", "resume"].as_ref());
+        let interactive = finalize_resume_from_args(["vorpal", "resume"].as_ref());
         assert!(interactive.resume_picker);
         assert!(!interactive.resume_last);
         assert_eq!(interactive.resume_session_id, None);
@@ -1208,7 +1254,7 @@ mod tests {
 
     #[test]
     fn resume_picker_logic_last() {
-        let interactive = finalize_resume_from_args(["codex", "resume", "--last"].as_ref());
+        let interactive = finalize_resume_from_args(["vorpal", "resume", "--last"].as_ref());
         assert!(!interactive.resume_picker);
         assert!(interactive.resume_last);
         assert_eq!(interactive.resume_session_id, None);
@@ -1217,7 +1263,7 @@ mod tests {
 
     #[test]
     fn resume_picker_logic_with_session_id() {
-        let interactive = finalize_resume_from_args(["codex", "resume", "1234"].as_ref());
+        let interactive = finalize_resume_from_args(["vorpal", "resume", "1234"].as_ref());
         assert!(!interactive.resume_picker);
         assert!(!interactive.resume_last);
         assert_eq!(interactive.resume_session_id.as_deref(), Some("1234"));
@@ -1226,7 +1272,7 @@ mod tests {
 
     #[test]
     fn resume_all_flag_sets_show_all() {
-        let interactive = finalize_resume_from_args(["codex", "resume", "--all"].as_ref());
+        let interactive = finalize_resume_from_args(["vorpal", "resume", "--all"].as_ref());
         assert!(interactive.resume_picker);
         assert!(interactive.resume_show_all);
     }
@@ -1235,7 +1281,7 @@ mod tests {
     fn resume_merges_option_flags_and_full_auto() {
         let interactive = finalize_resume_from_args(
             [
-                "codex",
+                "vorpal",
                 "resume",
                 "sid",
                 "--oss",
@@ -1292,7 +1338,7 @@ mod tests {
     fn resume_merges_dangerously_bypass_flag() {
         let interactive = finalize_resume_from_args(
             [
-                "codex",
+                "vorpal",
                 "resume",
                 "--dangerously-bypass-approvals-and-sandbox",
             ]
@@ -1306,7 +1352,7 @@ mod tests {
 
     #[test]
     fn fork_picker_logic_none_and_not_last() {
-        let interactive = finalize_fork_from_args(["codex", "fork"].as_ref());
+        let interactive = finalize_fork_from_args(["vorpal", "fork"].as_ref());
         assert!(interactive.fork_picker);
         assert!(!interactive.fork_last);
         assert_eq!(interactive.fork_session_id, None);
@@ -1315,7 +1361,7 @@ mod tests {
 
     #[test]
     fn fork_picker_logic_last() {
-        let interactive = finalize_fork_from_args(["codex", "fork", "--last"].as_ref());
+        let interactive = finalize_fork_from_args(["vorpal", "fork", "--last"].as_ref());
         assert!(!interactive.fork_picker);
         assert!(interactive.fork_last);
         assert_eq!(interactive.fork_session_id, None);
@@ -1324,7 +1370,7 @@ mod tests {
 
     #[test]
     fn fork_picker_logic_with_session_id() {
-        let interactive = finalize_fork_from_args(["codex", "fork", "1234"].as_ref());
+        let interactive = finalize_fork_from_args(["vorpal", "fork", "1234"].as_ref());
         assert!(!interactive.fork_picker);
         assert!(!interactive.fork_last);
         assert_eq!(interactive.fork_session_id.as_deref(), Some("1234"));
@@ -1333,14 +1379,14 @@ mod tests {
 
     #[test]
     fn fork_all_flag_sets_show_all() {
-        let interactive = finalize_fork_from_args(["codex", "fork", "--all"].as_ref());
+        let interactive = finalize_fork_from_args(["vorpal", "fork", "--all"].as_ref());
         assert!(interactive.fork_picker);
         assert!(interactive.fork_show_all);
     }
 
     #[test]
     fn app_server_analytics_default_disabled_without_flag() {
-        let app_server = app_server_from_args(["codex", "app-server"].as_ref());
+        let app_server = app_server_from_args(["vorpal", "app-server"].as_ref());
         assert!(!app_server.analytics_default_enabled);
         assert_eq!(
             app_server.listen,
@@ -1351,14 +1397,14 @@ mod tests {
     #[test]
     fn app_server_analytics_default_enabled_with_flag() {
         let app_server =
-            app_server_from_args(["codex", "app-server", "--analytics-default-enabled"].as_ref());
+            app_server_from_args(["vorpal", "app-server", "--analytics-default-enabled"].as_ref());
         assert!(app_server.analytics_default_enabled);
     }
 
     #[test]
     fn app_server_listen_websocket_url_parses() {
         let app_server = app_server_from_args(
-            ["codex", "app-server", "--listen", "ws://127.0.0.1:4500"].as_ref(),
+            ["vorpal", "app-server", "--listen", "ws://127.0.0.1:4500"].as_ref(),
         );
         assert_eq!(
             app_server.listen,
@@ -1371,7 +1417,7 @@ mod tests {
     #[test]
     fn app_server_listen_stdio_url_parses() {
         let app_server =
-            app_server_from_args(["codex", "app-server", "--listen", "stdio://"].as_ref());
+            app_server_from_args(["vorpal", "app-server", "--listen", "stdio://"].as_ref());
         assert_eq!(
             app_server.listen,
             codex_app_server::AppServerTransport::Stdio
@@ -1381,13 +1427,13 @@ mod tests {
     #[test]
     fn app_server_listen_invalid_url_fails_to_parse() {
         let parse_result =
-            MultitoolCli::try_parse_from(["codex", "app-server", "--listen", "http://foo"]);
+            MultitoolCli::try_parse_from(["vorpal", "app-server", "--listen", "http://foo"]);
         assert!(parse_result.is_err());
     }
 
     #[test]
     fn features_enable_parses_feature_name() {
-        let cli = MultitoolCli::try_parse_from(["codex", "features", "enable", "unified_exec"])
+        let cli = MultitoolCli::try_parse_from(["vorpal", "features", "enable", "unified_exec"])
             .expect("parse should succeed");
         let Some(Subcommand::Features(FeaturesCli { sub })) = cli.subcommand else {
             panic!("expected features subcommand");
@@ -1400,7 +1446,7 @@ mod tests {
 
     #[test]
     fn features_disable_parses_feature_name() {
-        let cli = MultitoolCli::try_parse_from(["codex", "features", "disable", "shell_tool"])
+        let cli = MultitoolCli::try_parse_from(["vorpal", "features", "disable", "shell_tool"])
             .expect("parse should succeed");
         let Some(Subcommand::Features(FeaturesCli { sub })) = cli.subcommand else {
             panic!("expected features subcommand");
@@ -1437,5 +1483,56 @@ mod tests {
             .to_overrides()
             .expect_err("feature should be rejected");
         assert_eq!(err.to_string(), "Unknown feature flag: does_not_exist");
+    }
+
+    #[test]
+    fn azureai_flag_parses() {
+        let endpoint = "https://vigilant-local-eastus2-aoai.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview";
+        let cli = MultitoolCli::try_parse_from(["vorpal", "--azureai", endpoint]).expect("parse");
+        assert_eq!(cli.azureai_endpoint.as_deref(), Some(endpoint));
+    }
+
+    #[test]
+    fn azureai_overrides_apply_expected_defaults() {
+        let endpoint = "https://example.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview";
+        let overrides = azureai_overrides(endpoint);
+        assert_eq!(
+            overrides,
+            vec![
+                "model_provider=azureai".to_string(),
+                "model=gpt-5.2-codex".to_string(),
+                "model_providers.azureai.name=Azure OpenAI (Entra)".to_string(),
+                format!("model_providers.azureai.endpoint={endpoint}"),
+                "model_providers.azureai.azure_entra_auth=true".to_string(),
+                "model_providers.azureai.wire_api=responses".to_string(),
+                "model_providers.azureai.supports_websockets=true".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn azureai_overrides_are_lower_precedence_than_explicit_c_flags() {
+        let endpoint = "https://example.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview";
+        let mut overrides = CliConfigOverrides {
+            raw_overrides: vec![
+                "model=custom-model".to_string(),
+                "model_providers.azureai.supports_websockets=false".to_string(),
+                "model_provider=custom".to_string(),
+            ],
+        };
+        apply_azureai_overrides(&mut overrides, Some(endpoint));
+
+        assert_eq!(overrides.raw_overrides[0], "model_provider=azureai");
+        assert_eq!(overrides.raw_overrides[1], "model=gpt-5.2-codex");
+        assert_eq!(
+            overrides.raw_overrides[6],
+            "model_providers.azureai.supports_websockets=true"
+        );
+        assert_eq!(overrides.raw_overrides[7], "model=custom-model");
+        assert_eq!(
+            overrides.raw_overrides[8],
+            "model_providers.azureai.supports_websockets=false"
+        );
+        assert_eq!(overrides.raw_overrides[9], "model_provider=custom");
     }
 }

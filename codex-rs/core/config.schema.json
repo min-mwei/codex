@@ -522,8 +522,21 @@
       "additionalProperties": false,
       "description": "Serializable representation of a provider definition.",
       "properties": {
+        "azure_entra_auth": {
+          "default": false,
+          "description": "When set, fetch an Azure Entra bearer token using Azure CLI (`az`) for each request attempt instead of using `env_key` or OpenAI auth.",
+          "type": "boolean"
+        },
+        "azure_entra_scope": {
+          "description": "Optional Azure Entra scope override. Defaults to `https://cognitiveservices.azure.com/.default` when `azure_entra_auth = true`.",
+          "type": "string"
+        },
         "base_url": {
           "description": "Base URL for the provider's OpenAI-compatible API.",
+          "type": "string"
+        },
+        "endpoint": {
+          "description": "Fully qualified endpoint URL for Responses requests.\n\nWhen set, Codex sends `POST` requests to this URL directly for `/responses`, including any query string such as Azure API versions.",
           "type": "string"
         },
         "env_http_headers": {
