@@ -1,31 +1,56 @@
 # Vorpal Proxy
 
-## 1) Start Vorpal CLI App Server (not Codex CLI)
+FastAPI + WebSocket proxy for Vorpal app-server.
 
-From the repo root, run Vorpal CLI with your Azure OpenAI Responses endpoint:
+## 1) Start Vorpal CLI App Server
+
+From the repo root:
 
 ```bash
 VORPAL_HOME=/tmp/vorpal-test \
-./vorpal_cli/codex-rs/target/debug/vorpal app-server \
+./codex-rs/target/debug/vorpal app-server \
   --listen ws://127.0.0.1:7788 \
-  --azureai "https://vigilant-local-eastus2-aoai.cognitiveservices.azure.com/openai/responses?api-version=2025-04-01-preview"
+  --azureai "https://<your-azure-endpoint>/openai/responses?api-version=2025-04-01-preview"
 ```
 
-## 2) Start Vorpal Proxy (UI + WebSocket)
+## 2) Install Proxy Package
 
-From `vorpal_cli/proxy`, install dependencies and start the proxy:
+From the repo root:
 
 ```bash
-python3 -m pip install -r requirements.txt
-python3 vorpal_proxy.py --listen 127.0.0.1:4501 --target ws://127.0.0.1:7788
+python3 -m pip install -e ./proxy
 ```
 
-Then open:
+## 3) Launch With Uvicorn Directly
 
+From the repo root:
+
+```bash
+VORPAL_PROXY_TARGET=ws://127.0.0.1:7788 \
+VORPAL_PROXY_LOG_FILE=vorpal_proxy.log \
+uvicorn --factory vorpal_proxy.app:create_app --host 127.0.0.1 --port 4501
 ```
+
+Open:
+
+```text
 http://127.0.0.1:4501
 ```
 
-The proxy serves the UI on HTTP and forwards WebSocket traffic to the Vorpal CLI app server.
+## 4) Launch With Installed CLI
 
-Logs are written to `vorpal_proxy.log` by default.
+After `pip install -e ./proxy`:
+
+```bash
+vorpal-proxy \
+  --target ws://127.0.0.1:7788 \
+  --listen 127.0.0.1:4501
+```
+
+## Environment Variables
+
+- `VORPAL_PROXY_TARGET` default: `ws://127.0.0.1:4500`
+- `VORPAL_PROXY_LOG_FILE` default: `vorpal_proxy.log`
+
+`vorpal.html` is bundled in the package (`vorpal_proxy/vorpal.html`) and served at `/` and `/vorpal.html`.
+The proxy serves the UI over HTTP and bridges WebSocket traffic to the configured backend.

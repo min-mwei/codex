@@ -374,7 +374,7 @@
           <textarea id="payload" spellcheck="false" placeholder="Type a message..."></textarea>
           <button id="sendBtn" type="button">Send</button>
         </div>
-        <div class="hint">Enter to send. Shift+Enter for a new line.</div>
+        <div class="hint">Enter send, Shift+Enter newline, ↑/↓ history, Ctrl+A/E/U/K/W, Alt+B/F.</div>
       </div>
     </main>
 
@@ -409,6 +409,12 @@
         let connectInFlight = false;
         const themeStorageKey = "vorpal-theme";
         const defaultTheme = "xterm-dark";
+        const inputHistoryStorageKey = "vorpal-input-history";
+        const maxInputHistory = 200;
+        let inputHistory = [];
+        let historyCursor = 0;
+        let historyDraft = "";
+        let suppressHistoryInputReset = false;
 
         const isDebug = () => debugToggle && debugToggle.checked;
         const isKnownTheme = (theme) =>
@@ -435,6 +441,205 @@
             themeSelect.value = nextTheme;
           }
           persistTheme(nextTheme);
+        };
+        const readStoredInputHistory = () => {
+          try {
+            const raw = window.localStorage.getItem(inputHistoryStorageKey);
+            if (!raw) {
+              return [];
+            }
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed)) {
+              return [];
+            }
+            return parsed
+              .filter((value) => typeof value === "string")
+              .slice(-maxInputHistory);
+          } catch (_error) {
+            return [];
+          }
+        };
+        const persistInputHistory = () => {
+          try {
+            window.localStorage.setItem(inputHistoryStorageKey, JSON.stringify(inputHistory));
+          } catch (_error) {
+            // Ignore persistence failures; history still works for the current session.
+          }
+        };
+        const setInputValue = (text) => {
+          suppressHistoryInputReset = true;
+          payloadInput.value = text;
+          payloadInput.setSelectionRange(text.length, text.length);
+          suppressHistoryInputReset = false;
+        };
+        const resetHistoryCursor = (draft = payloadInput.value) => {
+          historyCursor = inputHistory.length;
+          historyDraft = draft;
+        };
+        const pushInputHistory = (text) => {
+          if (!text) {
+            return;
+          }
+          if (inputHistory[inputHistory.length - 1] !== text) {
+            inputHistory.push(text);
+            if (inputHistory.length > maxInputHistory) {
+              inputHistory = inputHistory.slice(-maxInputHistory);
+            }
+            persistInputHistory();
+          }
+          resetHistoryCursor("");
+        };
+        const navigateHistory = (direction) => {
+          if (!inputHistory.length) {
+            return false;
+          }
+          if (direction < 0) {
+            if (historyCursor === inputHistory.length) {
+              historyDraft = payloadInput.value;
+            }
+            if (historyCursor <= 0) {
+              return false;
+            }
+            historyCursor -= 1;
+            setInputValue(inputHistory[historyCursor]);
+            return true;
+          }
+          if (direction > 0) {
+            if (historyCursor >= inputHistory.length) {
+              return false;
+            }
+            historyCursor += 1;
+            if (historyCursor === inputHistory.length) {
+              setInputValue(historyDraft);
+            } else {
+              setInputValue(inputHistory[historyCursor]);
+            }
+            return true;
+          }
+          return false;
+        };
+        const getSelection = () => {
+          const start = payloadInput.selectionStart ?? 0;
+          const end = payloadInput.selectionEnd ?? start;
+          return { start, end };
+        };
+        const setSelection = (start, end = start) => {
+          payloadInput.setSelectionRange(start, end);
+        };
+        const replaceSelection = (replacement, start = null, end = null) => {
+          const { start: selStart, end: selEnd } = getSelection();
+          const from = start == null ? selStart : start;
+          const to = end == null ? selEnd : end;
+          const next = `${payloadInput.value.slice(0, from)}${replacement}${payloadInput.value.slice(to)}`;
+          setInputValue(next);
+          const caret = from + replacement.length;
+          setSelection(caret, caret);
+          resetHistoryCursor(next);
+        };
+        const previousWordStart = (text, index) => {
+          let pos = index;
+          while (pos > 0 && /\s/.test(text[pos - 1])) {
+            pos -= 1;
+          }
+          while (pos > 0 && !/\s/.test(text[pos - 1])) {
+            pos -= 1;
+          }
+          return pos;
+        };
+        const nextWordEnd = (text, index) => {
+          let pos = index;
+          while (pos < text.length && /\s/.test(text[pos])) {
+            pos += 1;
+          }
+          while (pos < text.length && !/\s/.test(text[pos])) {
+            pos += 1;
+          }
+          return pos;
+        };
+        const isCaretOnFirstLine = () => {
+          const { start } = getSelection();
+          return payloadInput.value.slice(0, start).indexOf("\n") === -1;
+        };
+        const isCaretOnLastLine = () => {
+          const { end } = getSelection();
+          return payloadInput.value.indexOf("\n", end) === -1;
+        };
+        const handleReadlineKeybind = (event) => {
+          if (event.metaKey) {
+            return false;
+          }
+          const { start, end } = getSelection();
+          const value = payloadInput.value;
+          const hasSelection = start !== end;
+
+          if (event.ctrlKey && !event.altKey) {
+            const key = event.key.toLowerCase();
+            if (key === "a") {
+              event.preventDefault();
+              setSelection(0, 0);
+              return true;
+            }
+            if (key === "e") {
+              event.preventDefault();
+              setSelection(value.length, value.length);
+              return true;
+            }
+            if (key === "u") {
+              event.preventDefault();
+              if (hasSelection) {
+                replaceSelection("");
+              } else {
+                replaceSelection("", 0, start);
+              }
+              return true;
+            }
+            if (key === "k") {
+              event.preventDefault();
+              if (hasSelection) {
+                replaceSelection("");
+              } else {
+                replaceSelection("", start, value.length);
+              }
+              return true;
+            }
+            if (key === "w") {
+              event.preventDefault();
+              if (hasSelection) {
+                replaceSelection("");
+              } else {
+                replaceSelection("", previousWordStart(value, start), start);
+              }
+              return true;
+            }
+            if (key === "p") {
+              event.preventDefault();
+              navigateHistory(-1);
+              return true;
+            }
+            if (key === "n") {
+              event.preventDefault();
+              navigateHistory(1);
+              return true;
+            }
+          }
+
+          if (event.altKey && !event.ctrlKey) {
+            const key = event.key.toLowerCase();
+            if (key === "b") {
+              event.preventDefault();
+              const target = previousWordStart(value, start);
+              setSelection(target, target);
+              return true;
+            }
+            if (key === "f") {
+              event.preventDefault();
+              const target = nextWordEnd(value, end);
+              setSelection(target, target);
+              return true;
+            }
+          }
+
+          return false;
         };
 
         const showInterim = false;
@@ -494,18 +699,6 @@
         };
 
         const sendFromInput = () => {
-          if (!socket || socket.readyState !== WebSocket.OPEN) {
-            const raw = payloadInput.value;
-            if (!raw.trim()) {
-              return;
-            }
-            const text = raw.trim();
-            pendingInputs.push(text);
-            payloadInput.value = "";
-            logLine("user>", text);
-            connect();
-            return;
-          }
           const raw = payloadInput.value;
           if (!raw.trim()) {
             return;
@@ -513,7 +706,12 @@
           const text = raw.trim();
           pendingInputs.push(text);
           payloadInput.value = "";
+          pushInputHistory(text);
           logLine("user>", text);
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            connect();
+            return;
+          }
           ensureSession();
           flushInputs();
         };
@@ -811,10 +1009,45 @@
         sendBtn.addEventListener("click", sendFromInput);
 
         payloadInput.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" && !event.shiftKey) {
+          if (handleReadlineKeybind(event)) {
+            return;
+          }
+          if (
+            event.key === "ArrowUp" &&
+            !event.shiftKey &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            !event.metaKey &&
+            isCaretOnFirstLine()
+          ) {
+            if (navigateHistory(-1)) {
+              event.preventDefault();
+            }
+            return;
+          }
+          if (
+            event.key === "ArrowDown" &&
+            !event.shiftKey &&
+            !event.ctrlKey &&
+            !event.altKey &&
+            !event.metaKey &&
+            isCaretOnLastLine()
+          ) {
+            if (navigateHistory(1)) {
+              event.preventDefault();
+            }
+            return;
+          }
+          if (event.key === "Enter" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
             event.preventDefault();
             sendFromInput();
           }
+        });
+        payloadInput.addEventListener("input", () => {
+          if (suppressHistoryInputReset) {
+            return;
+          }
+          resetHistoryCursor(payloadInput.value);
         });
 
         initBtn.addEventListener("click", () => {
@@ -838,7 +1071,9 @@
         }
 
         applyTheme(readStoredTheme() || defaultTheme);
+        inputHistory = readStoredInputHistory();
         payloadInput.value = "";
+        resetHistoryCursor("");
         connect();
       })();
     </script>

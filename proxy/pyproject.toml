@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vorpal-proxy"
+version = "0.1.0"
+description = "WebSocket proxy and UI host for Vorpal app-server"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.110.0",
+  "uvicorn>=0.30.0",
+  "websockets>=12.0",
+]
+
+[project.scripts]
+vorpal-proxy = "vorpal_proxy.__main__:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+vorpal_proxy = ["vorpal.html"]
