@@ -1290,7 +1290,7 @@
         const beginStream = () => {
           streamTimestamp = new Date().toISOString();
           streamLineIndex = logLines.length;
-          logLines.push(`[${streamTimestamp}] assistant> `);
+          logLines.push(`[${streamTimestamp}] vorpal> `);
           renderLog();
         };
 
@@ -1299,7 +1299,7 @@
             beginStream();
           }
           const ts = streamTimestamp || new Date().toISOString();
-          updateLineAt(streamLineIndex, `[${ts}] assistant> ${streamBuffer}`);
+          updateLineAt(streamLineIndex, `[${ts}] vorpal> ${streamBuffer}`);
         };
 
         const endStream = () => {
@@ -1343,7 +1343,7 @@
             updateStream();
             endStream();
           } else {
-            logLine("assistant>", message);
+            logLine("vorpal>", message);
           }
         };
 
