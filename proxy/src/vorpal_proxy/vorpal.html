@@ -192,27 +192,23 @@
         color: var(--danger);
       }
 
-      .debug-toggle {
+      .status {
         display: inline-flex;
         align-items: center;
-        gap: 6px;
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        color: var(--muted);
-      }
-
-      .debug-toggle input {
-        accent-color: var(--accent);
-      }
-
-      .status {
         font-size: 12px;
         color: var(--muted);
         text-transform: lowercase;
       }
 
+      .status[data-state="idle"] {
+        color: var(--muted);
+      }
+
       .status[data-state="connected"] {
+        color: var(--accent);
+      }
+
+      .status[data-state="responding"] {
         color: var(--accent);
       }
 
@@ -224,8 +220,42 @@
         color: #ffbd2e;
       }
 
+      .status[data-state="thinking"] {
+        color: #ffbd2e;
+      }
+
+      .status[data-state="working"] {
+        color: #8cc8ff;
+      }
+
+      .status[data-state="waiting"] {
+        color: #ffbd2e;
+      }
+
       .status[data-state="disconnected"] {
         color: var(--danger);
+      }
+
+      .status[data-busy="true"]::after {
+        content: "";
+        width: 6px;
+        height: 6px;
+        margin-left: 8px;
+        border-radius: 50%;
+        background: currentColor;
+        animation: statusPulse 1s ease-in-out infinite;
+      }
+
+      @keyframes statusPulse {
+        0%,
+        100% {
+          opacity: 0.3;
+          transform: scale(0.75);
+        }
+        50% {
+          opacity: 1;
+          transform: scale(1.1);
+        }
       }
 
       .log-wrap {
@@ -343,15 +373,11 @@
         </div>
 
         <div class="title-wrap">
-          <div class="title">vorpal-cli // ai security agent</div>
+          <div class="title">vorpal-cli // ai security workbench</div>
           <div id="status" class="status">status: idle</div>
         </div>
 
         <div class="controls">
-          <label class="debug-toggle" for="debugToggle">
-            debug
-            <input id="debugToggle" type="checkbox" />
-          </label>
           <label class="control-label" for="themeSelect">theme</label>
           <select id="themeSelect" aria-label="Color scheme">
             <option value="xterm-dark">XTerm Dark</option>
@@ -383,7 +409,6 @@
         const sendBtn = document.getElementById("sendBtn");
         const initBtn = document.getElementById("initBtn");
         const clearBtn = document.getElementById("clearBtn");
-        const debugToggle = document.getElementById("debugToggle");
         const themeSelect = document.getElementById("themeSelect");
         const payloadInput = document.getElementById("payload");
         const logEl = document.getElementById("log");
@@ -417,8 +442,18 @@
         let suppressHistoryInputReset = false;
         const approvalQueue = [];
         let activeApproval = null;
+        const turnRequestIds = new Set();
+        const activeItemById = new Map();
+        let activeTurnId = null;
+        let turnRequestInFlight = false;
+        let threadStatus = null;
+        let transportState = "connecting";
+        let lastStatusSnapshot = null;
 
-        const isDebug = () => debugToggle && debugToggle.checked;
+        const debugQuery = new URLSearchParams(window.location.search).get("debug");
+        const debugEnabled =
+          debugQuery != null && ["", "1", "true", "yes", "on"].includes(String(debugQuery).trim().toLowerCase());
+        const isDebug = () => debugEnabled;
         const isKnownTheme = (theme) =>
           !!themeSelect && Array.from(themeSelect.options).some((option) => option.value === theme);
         const readStoredTheme = () => {
@@ -644,7 +679,19 @@
           return false;
         };
 
-        const showInterim = false;
+        const showInterim = true;
+        const busyItemPriority = [
+          "commandExecution",
+          "fileChange",
+          "mcpToolCall",
+          "webSearch",
+          "collabToolCall",
+          "reasoning",
+          "agentMessage",
+          "plan",
+          "contextCompaction",
+          "userMessage",
+        ];
         const logSystem = (prefix, line) => {
           if (isDebug()) {
             logLine(prefix, line);
@@ -683,9 +730,345 @@
           renderLog();
         };
 
-        const setStatus = (text) => {
+        const normalizeThreadStatus = (status) => {
+          if (!status || typeof status !== "object") {
+            return null;
+          }
+          return String(status.type || "")
+            .trim()
+            .toLowerCase();
+        };
+
+        const threadActiveFlags = () => {
+          if (normalizeThreadStatus(threadStatus) !== "active") {
+            return [];
+          }
+          if (!Array.isArray(threadStatus.activeFlags)) {
+            return [];
+          }
+          return threadStatus.activeFlags.map((flag) => String(flag).trim().toLowerCase());
+        };
+
+        const applyStatus = ({ text, state, busy }) => {
           statusEl.textContent = `status: ${text}`;
-          statusEl.dataset.state = text.replace(/\.+$/, "").trim().toLowerCase();
+          statusEl.dataset.state = state;
+          statusEl.dataset.busy = busy ? "true" : "false";
+        };
+
+        const sameStatusSnapshot = (left, right) => {
+          if (!left || !right) {
+            return false;
+          }
+          return left.text === right.text && left.state === right.state && left.busy === right.busy;
+        };
+
+        const formatStatusSnapshot = (snapshot) => {
+          if (!snapshot) {
+            return "";
+          }
+          const text = String(snapshot.text || "").trim();
+          const detailText = String(snapshot.detail || "").trim();
+          if (!detailText || detailText.toLowerCase() === text.toLowerCase()) {
+            return text;
+          }
+          const detail = ` (${detailText})`;
+          return `${snapshot.text}${detail}`;
+        };
+
+        const trimStatusText = (value, limit = 72) => {
+          if (typeof value !== "string") {
+            return "";
+          }
+          const singleLine = value.replace(/\s+/g, " ").trim();
+          if (!singleLine) {
+            return "";
+          }
+          if (singleLine.length <= limit) {
+            return singleLine;
+          }
+          return `${singleLine.slice(0, limit - 1)}…`;
+        };
+
+        const approvalMethodLabel = (method) => {
+          if (!method) return "approval";
+          if (method.includes("commandExecution") || method === "execCommandApproval") {
+            return "command approval";
+          }
+          if (method.includes("fileChange") || method === "applyPatchApproval") {
+            return "file change approval";
+          }
+          return "approval";
+        };
+
+        const renderCommandText = (rawCommand, limit = 84) => {
+          if (typeof rawCommand === "string") {
+            return trimStatusText(rawCommand, limit);
+          }
+          if (!Array.isArray(rawCommand)) {
+            return "";
+          }
+          const normalized = rawCommand
+            .filter((part) => part !== null && part !== undefined)
+            .map((part) => String(part))
+            .filter((part) => part.length > 0)
+            .map((part) => (/\s/.test(part) ? JSON.stringify(part) : part));
+          if (!normalized.length) {
+            return "";
+          }
+          return trimStatusText(normalized.join(" "), limit);
+        };
+
+        const describeBusyItem = (item) => {
+          if (!item || !item.type) {
+            return "working";
+          }
+          if (item.type === "reasoning") {
+            return "reasoning";
+          }
+          if (item.type === "agentMessage") {
+            return "drafting reply";
+          }
+          if (item.type === "commandExecution") {
+            const command = renderCommandText(item.command, 84);
+            if (command) {
+              return `cmd: ${command}`;
+            }
+            const interactionInput = trimStatusText(item.interaction_input || item.interactionInput || "", 72);
+            if (interactionInput) {
+              return `stdin: ${interactionInput}`;
+            }
+            const cwd = trimStatusText(item.cwd || "", 64);
+            if (cwd) {
+              return `cwd: ${cwd}`;
+            }
+            return "running command";
+          }
+          if (item.type === "fileChange") {
+            if (Array.isArray(item.changes) && item.changes.length > 0) {
+              const firstPath = trimStatusText(item.changes[0] && item.changes[0].path ? item.changes[0].path : "", 52);
+              if (firstPath && item.changes.length > 1) {
+                return `editing ${firstPath} (+${item.changes.length - 1} more)`;
+              }
+              if (firstPath) {
+                return `editing ${firstPath}`;
+              }
+            }
+            return "editing files";
+          }
+          if (item.type === "mcpToolCall") {
+            const tool = trimStatusText(item.tool || "", 52);
+            return tool ? `tool: ${tool}` : "calling MCP tool";
+          }
+          if (item.type === "webSearch") {
+            const query = trimStatusText(item.query || "", 72);
+            return query ? `search: ${query}` : "web search";
+          }
+          if (item.type === "collabToolCall") {
+            const tool = trimStatusText(item.tool || "", 52);
+            return tool ? `agent: ${tool}` : "collaboration";
+          }
+          if (item.type === "plan") {
+            return "planning";
+          }
+          return trimStatusText(item.type, 24) || "working";
+        };
+
+        const removeItemsForTurn = (turnId) => {
+          if (!turnId) return;
+          for (const [itemId, metadata] of activeItemById.entries()) {
+            if (metadata.turnId === turnId) {
+              activeItemById.delete(itemId);
+            }
+          }
+        };
+
+        const noteTurnStarted = (turnId) => {
+          turnRequestInFlight = false;
+          if (turnId && activeTurnId && activeTurnId !== turnId) {
+            removeItemsForTurn(activeTurnId);
+            endStream();
+          }
+          if (turnId) {
+            activeTurnId = turnId;
+          }
+          refreshStatus();
+        };
+
+        const noteTurnCompleted = (turnId) => {
+          turnRequestInFlight = false;
+          if (turnId) {
+            removeItemsForTurn(turnId);
+          } else if (activeTurnId) {
+            removeItemsForTurn(activeTurnId);
+          }
+          if (!turnId || !activeTurnId || activeTurnId === turnId) {
+            activeTurnId = null;
+          }
+          endStream();
+          refreshStatus();
+        };
+
+        const noteItemStarted = (item, turnId = null) => {
+          if (!item || !item.id) {
+            if (turnId) {
+              noteTurnStarted(turnId);
+            }
+            return;
+          }
+          if (item.type === "userMessage") {
+            if (turnId) {
+              noteTurnStarted(turnId);
+            }
+            return;
+          }
+          const effectiveTurnId = turnId || activeTurnId || null;
+          const existing = activeItemById.get(item.id);
+          let detail = describeBusyItem(item);
+          if (detail === "running command" && existing && existing.detail) {
+            detail = existing.detail;
+          }
+          activeItemById.set(item.id, {
+            type: item.type || "unknown",
+            turnId: effectiveTurnId,
+            detail,
+          });
+          if (turnId) {
+            noteTurnStarted(turnId);
+          } else {
+            refreshStatus();
+          }
+        };
+
+        const noteItemCompleted = (item) => {
+          if (item && item.id) {
+            activeItemById.delete(item.id);
+          }
+          refreshStatus();
+        };
+
+        const currentBusyItem = () => {
+          for (const type of busyItemPriority) {
+            for (const [itemId, metadata] of activeItemById.entries()) {
+              if (metadata.type !== type) {
+                continue;
+              }
+              if (!activeTurnId || !metadata.turnId || metadata.turnId === activeTurnId) {
+                return {
+                  id: itemId,
+                  type: metadata.type,
+                  turnId: metadata.turnId,
+                  detail: metadata.detail || "",
+                };
+              }
+            }
+          }
+          return null;
+        };
+
+        const runtimeStatus = () => {
+          if (transportState === "connecting") {
+            return { text: "connecting...", state: "connecting", busy: true, detail: "opening websocket" };
+          }
+          if (transportState === "disconnected") {
+            return { text: "disconnected", state: "disconnected", busy: false, detail: "" };
+          }
+          if (transportState === "error") {
+            return { text: "error", state: "error", busy: false, detail: "" };
+          }
+          if (transportState !== "connected") {
+            return { text: "idle", state: "idle", busy: false, detail: "" };
+          }
+
+          const activeFlags = threadActiveFlags();
+          const statusType = normalizeThreadStatus(threadStatus);
+
+          if (activeApproval || approvalQueue.length || activeFlags.includes("waitingonapproval")) {
+            const activeMethod = approvalMethodLabel(activeApproval && activeApproval.method ? activeApproval.method : "");
+            const pendingCount = (activeApproval ? 1 : 0) + approvalQueue.length;
+            const detail = pendingCount > 1 ? `${activeMethod}, ${pendingCount} pending` : activeMethod;
+            return { text: "waiting approval", state: "waiting", busy: true, detail };
+          }
+          if (activeFlags.includes("waitingonuserinput")) {
+            return { text: "waiting input", state: "waiting", busy: true, detail: "tool needs user input" };
+          }
+          if (turnRequestInFlight) {
+            return {
+              text: "starting turn",
+              state: "thinking",
+              busy: true,
+              detail: `${turnRequestIds.size} turn request${turnRequestIds.size === 1 ? "" : "s"} in flight`,
+            };
+          }
+
+          const turnRunning = activeTurnId != null || statusType === "active";
+          if (turnRunning) {
+            const busyItem = currentBusyItem();
+            if (busyItem && busyItem.type === "reasoning") {
+              return { text: "thinking", state: "thinking", busy: true, detail: busyItem.detail || "reasoning" };
+            }
+            if (busyItem && busyItem.type === "commandExecution") {
+              return { text: "running command", state: "working", busy: true, detail: busyItem.detail || "running command" };
+            }
+            if (busyItem && busyItem.type === "fileChange") {
+              return { text: "editing files", state: "working", busy: true, detail: busyItem.detail || "editing files" };
+            }
+            if (
+              busyItem &&
+              (busyItem.type === "mcpToolCall" || busyItem.type === "webSearch" || busyItem.type === "collabToolCall")
+            ) {
+              return { text: "calling tools", state: "working", busy: true, detail: busyItem.detail || "calling tools" };
+            }
+            if (streaming || (busyItem && busyItem.type === "agentMessage")) {
+              return {
+                text: "responding",
+                state: "responding",
+                busy: true,
+                detail: busyItem ? busyItem.detail || "drafting reply" : "streaming reply",
+              };
+            }
+            if (busyItem) {
+              return { text: "working", state: "working", busy: true, detail: busyItem.detail || "working" };
+            }
+            return { text: "thinking", state: "thinking", busy: true, detail: "processing" };
+          }
+
+          if (pendingInputs.length > 0) {
+            return {
+              text: "queued",
+              state: "thinking",
+              busy: true,
+              detail: `${pendingInputs.length} queued message${pendingInputs.length === 1 ? "" : "s"}`,
+            };
+          }
+          if (statusType === "systemerror") {
+            return { text: "thread error", state: "error", busy: false, detail: "backend reported system error" };
+          }
+
+          return { text: "idle", state: "idle", busy: false, detail: "" };
+        };
+
+        const refreshStatus = () => {
+          const nextStatus = runtimeStatus();
+          applyStatus(nextStatus);
+          if (sameStatusSnapshot(lastStatusSnapshot, nextStatus)) {
+            return;
+          }
+          if (lastStatusSnapshot) {
+            logLine("state>", `${formatStatusSnapshot(lastStatusSnapshot)} -> ${formatStatusSnapshot(nextStatus)}`);
+          } else {
+            logLine("state>", formatStatusSnapshot(nextStatus));
+          }
+          lastStatusSnapshot = nextStatus;
+        };
+
+        const setTransportState = (nextState) => {
+          transportState = nextState;
+          refreshStatus();
+        };
+
+        const setThreadStatus = (nextStatus) => {
+          threadStatus = nextStatus && typeof nextStatus === "object" ? nextStatus : null;
+          refreshStatus();
         };
 
         const sendJson = (obj) => {
@@ -764,16 +1147,19 @@
 
         const nextApproval = () => {
           if (activeApproval || !approvalQueue.length) {
+            refreshStatus();
             return;
           }
           activeApproval = approvalQueue.shift();
           logLine("approval>", `requested ${activeApproval.method}`);
           logApprovalPrompt(activeApproval);
+          refreshStatus();
         };
 
         const clearApprovals = () => {
           approvalQueue.length = 0;
           activeApproval = null;
+          refreshStatus();
         };
 
         const queueApproval = (request) => {
@@ -794,6 +1180,7 @@
           logLine("approval>", `${method} -> ${decision}`);
           activeApproval = null;
           nextApproval();
+          refreshStatus();
         };
 
         const actionFromApprovalInput = (text) => {
@@ -845,6 +1232,7 @@
             return;
           }
           pendingInputs.push(text);
+          refreshStatus();
           if (!socket || socket.readyState !== WebSocket.OPEN) {
             connect();
             return;
@@ -884,8 +1272,11 @@
           }
           while (pendingInputs.length) {
             const text = pendingInputs.shift();
+            const requestId = nextId++;
+            turnRequestIds.add(requestId);
+            turnRequestInFlight = true;
             sendJson({
-              id: nextId++,
+              id: requestId,
               method: "turn/start",
               params: {
                 threadId,
@@ -893,6 +1284,7 @@
               },
             });
           }
+          refreshStatus();
         };
 
         const beginStream = () => {
@@ -915,6 +1307,7 @@
           streamBuffer = "";
           streamTimestamp = null;
           streamLineIndex = null;
+          refreshStatus();
         };
 
         const handleAssistantDelta = (delta) => {
@@ -923,6 +1316,7 @@
             streaming = true;
             streamBuffer = "";
             beginStream();
+            refreshStatus();
           }
           streamBuffer += delta;
           updateStream();
@@ -957,14 +1351,45 @@
           if (!msg || !msg.type) {
             return;
           }
+          const effectiveTurnId = msg.turn_id || msg.turnId || turnId || null;
+          if (msg.type === "task_started") {
+            noteTurnStarted(effectiveTurnId);
+            return;
+          }
+          if (msg.type === "task_complete") {
+            noteTurnCompleted(effectiveTurnId);
+            if (msg.last_agent_message) {
+              handleAssistantMessage(msg.last_agent_message, effectiveTurnId);
+            }
+            return;
+          }
           if (msg.type === "agent_message") {
-            handleAssistantMessage(msg.message || "", turnId);
+            handleAssistantMessage(msg.message || "", effectiveTurnId);
             return;
           }
           if (msg.type === "agent_message_delta" || msg.type === "agent_message_content_delta") {
-            if (showInterim) {
-              handleAssistantDelta(msg.delta || "");
-            }
+            // Legacy deltas duplicate v2 `item/agentMessage/delta`; v2 is the source of truth.
+            return;
+          }
+          if (msg.type === "exec_command_begin") {
+            const command = msg.command || msg.commandLine || msg.command_line || msg.cmd || null;
+            noteItemStarted(
+              {
+                id: msg.call_id || msg.callId || `legacy-command-${Date.now()}`,
+                type: "commandExecution",
+                command,
+                cwd: msg.cwd || msg.workdir || msg.working_directory || "",
+                interaction_input: msg.interaction_input || msg.interactionInput || "",
+              },
+              effectiveTurnId,
+            );
+            return;
+          }
+          if (msg.type === "exec_command_end") {
+            noteItemCompleted({
+              id: msg.call_id || msg.callId,
+              type: "commandExecution",
+            });
             return;
           }
           if (msg.type === "error" && msg.message) {
@@ -1000,12 +1425,31 @@
             ensureSession();
             return;
           }
+          if (obj.id != null && turnRequestIds.has(obj.id)) {
+            turnRequestIds.delete(obj.id);
+            if (obj.result && obj.result.turn) {
+              const turn = obj.result.turn;
+              if (String(turn.status || "").toLowerCase() === "inprogress") {
+                noteTurnStarted(turn.id || null);
+              } else {
+                noteTurnCompleted(turn.id || null);
+              }
+            } else {
+              turnRequestInFlight = false;
+              refreshStatus();
+            }
+            if (obj.error && obj.error.message) {
+              logLine("error", obj.error.message);
+            }
+            return;
+          }
           if (obj.id && obj.id === threadRequestId && obj.result && obj.result.thread) {
             const newThreadId = obj.result.thread.id;
             if (threadId !== newThreadId) {
               threadId = newThreadId;
               logSystem("**", `thread ${threadId} ready`);
             }
+            setThreadStatus(obj.result.thread.status || null);
             flushInputs();
             return;
           }
@@ -1015,6 +1459,7 @@
               threadId = newThreadId;
               logSystem("**", `thread ${threadId} ready`);
             }
+            setThreadStatus(obj.result.thread.status || null);
             flushInputs();
             return;
           }
@@ -1024,10 +1469,31 @@
               threadId = newThreadId;
               logSystem("**", `thread ${threadId} ready`);
             }
+            setThreadStatus(obj.params.thread.status || null);
             flushInputs();
             return;
           }
+          if (obj.method === "thread/status/changed" && obj.params) {
+            if (!threadId && obj.params.threadId) {
+              threadId = obj.params.threadId;
+            }
+            setThreadStatus(obj.params.status || null);
+            return;
+          }
+          if (obj.method === "turn/started" && obj.params && obj.params.turn) {
+            noteTurnStarted(obj.params.turn.id || null);
+            return;
+          }
+          if (obj.method === "turn/completed" && obj.params && obj.params.turn) {
+            noteTurnCompleted(obj.params.turn.id || null);
+            return;
+          }
+          if (obj.method === "item/started" && obj.params && obj.params.item) {
+            noteItemStarted(obj.params.item, obj.params.turnId || null);
+            return;
+          }
           if (obj.method === "item/agentMessage/delta" && obj.params) {
+            noteTurnStarted(obj.params.turnId || null);
             if (showInterim) {
               handleAssistantDelta(obj.params.delta || "");
             }
@@ -1041,15 +1507,20 @@
               obj.method === "execCommandApproval" ||
               obj.method === "applyPatchApproval")
           ) {
+            if (obj.params && obj.params.turnId) {
+              noteTurnStarted(obj.params.turnId);
+            }
             queueApproval(obj);
             return;
           }
           if (obj.method === "item/completed" && obj.params && obj.params.item) {
             const item = obj.params.item;
+            noteItemCompleted(item);
             if (item.type === "agentMessage" && item.text) {
               handleAssistantMessage(item.text, obj.params.turnId || null);
               return;
             }
+            return;
           }
           if (obj.method && obj.method.startsWith("codex/event/")) {
             if (obj.params && obj.params.msg) {
@@ -1076,8 +1547,14 @@
           threadRequestId = null;
           threadId = null;
           pendingInputs.length = 0;
+          turnRequestIds.clear();
+          turnRequestInFlight = false;
+          activeTurnId = null;
+          activeItemById.clear();
+          threadStatus = null;
           endStream();
           clearApprovals();
+          refreshStatus();
         };
 
         const scheduleReconnect = () => {
@@ -1094,12 +1571,12 @@
             return;
           }
           connectInFlight = true;
-          setStatus("connecting...");
+          setTransportState("connecting");
           socket = new WebSocket(wsUrl);
 
           socket.addEventListener("open", () => {
             connectInFlight = false;
-            setStatus("connected");
+            setTransportState("connected");
             logSystem("--", "connected");
             ensureSession();
             flushInputs();
@@ -1107,7 +1584,7 @@
 
           socket.addEventListener("close", (event) => {
             connectInFlight = false;
-            setStatus("disconnected");
+            setTransportState("disconnected");
             const reason = event.reason ? ` reason=${event.reason}` : "";
             logSystem("--", `closed code=${event.code}${reason}`);
             resetSessionState();
@@ -1116,7 +1593,7 @@
 
           socket.addEventListener("error", () => {
             connectInFlight = false;
-            setStatus("error");
+            setTransportState("error");
             logLine("!!", "WebSocket error");
           });
 
@@ -1223,6 +1700,7 @@
         inputHistory = readStoredInputHistory();
         payloadInput.value = "";
         resetHistoryCursor("");
+        refreshStatus();
         connect();
       })();
     </script>
