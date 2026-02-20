@@ -415,6 +415,8 @@
         let historyCursor = 0;
         let historyDraft = "";
         let suppressHistoryInputReset = false;
+        const approvalQueue = [];
+        let activeApproval = null;
 
         const isDebug = () => debugToggle && debugToggle.checked;
         const isKnownTheme = (theme) =>
@@ -698,16 +700,151 @@
           }
         };
 
+        const isLegacyApprovalMethod = (method) =>
+          method === "execCommandApproval" || method === "applyPatchApproval";
+
+        const approvalDecision = (method, action) => {
+          if (isLegacyApprovalMethod(method)) {
+            if (action === "accept") return "approved";
+            if (action === "acceptForSession") return "approved_for_session";
+            if (action === "decline") return "denied";
+            return "abort";
+          }
+          if (action === "accept") return "accept";
+          if (action === "acceptForSession") return "acceptForSession";
+          if (action === "decline") return "decline";
+          return "cancel";
+        };
+
+        const approvalSummaryLines = (request) => {
+          const params = request.params || {};
+          const lines = [];
+          if (params.reason) {
+            lines.push(`reason: ${params.reason}`);
+          }
+          if (params.command) {
+            lines.push(`command: ${params.command}`);
+          }
+          if (params.cwd) {
+            lines.push(`cwd: ${params.cwd}`);
+          }
+          if (params.itemId) {
+            lines.push(`item: ${params.itemId}`);
+          }
+          if (params.threadId) {
+            lines.push(`thread: ${params.threadId}`);
+          }
+          if (!lines.length) {
+            lines.push(JSON.stringify(params, null, 2));
+          }
+          return lines.join("\n");
+        };
+
+        const approvalPromptForMethod = (method) => {
+          if (method === "item/commandExecution/requestApproval" || method === "execCommandApproval") {
+            return "command approval required";
+          }
+          if (method === "item/fileChange/requestApproval" || method === "applyPatchApproval") {
+            return "file change approval required";
+          }
+          return "approval required";
+        };
+
+        const logApprovalPrompt = (request) => {
+          const method = request.method || "";
+          logLine("approval>", approvalPromptForMethod(method));
+          const details = approvalSummaryLines(request);
+          details
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)
+            .forEach((line) => logLine("approval>", line));
+          logLine("approval>", "choose: 1 accept | 2 accept-for-session | 3 decline | 4 cancel-turn");
+        };
+
+        const nextApproval = () => {
+          if (activeApproval || !approvalQueue.length) {
+            return;
+          }
+          activeApproval = approvalQueue.shift();
+          logLine("approval>", `requested ${activeApproval.method}`);
+          logApprovalPrompt(activeApproval);
+        };
+
+        const clearApprovals = () => {
+          approvalQueue.length = 0;
+          activeApproval = null;
+        };
+
+        const queueApproval = (request) => {
+          approvalQueue.push(request);
+          nextApproval();
+        };
+
+        const replyApproval = (action) => {
+          if (!activeApproval || activeApproval.id == null) {
+            return;
+          }
+          const method = activeApproval.method || "";
+          const decision = approvalDecision(method, action);
+          sendJson({
+            id: activeApproval.id,
+            result: { decision },
+          });
+          logLine("approval>", `${method} -> ${decision}`);
+          activeApproval = null;
+          nextApproval();
+        };
+
+        const actionFromApprovalInput = (text) => {
+          if (!text) return null;
+          const normalized = text.trim().toLowerCase();
+          if (normalized === "1" || normalized === "accept" || normalized === "a") {
+            return "accept";
+          }
+          if (
+            normalized === "2" ||
+            normalized === "accept for session" ||
+            normalized === "accept-for-session" ||
+            normalized === "session"
+          ) {
+            return "acceptForSession";
+          }
+          if (normalized === "3" || normalized === "decline" || normalized === "deny" || normalized === "d") {
+            return "decline";
+          }
+          if (normalized === "4" || normalized === "cancel" || normalized === "abort" || normalized === "c") {
+            return "cancel";
+          }
+          return null;
+        };
+
+        const handleApprovalInput = (text) => {
+          if (!activeApproval) {
+            return false;
+          }
+          const action = actionFromApprovalInput(text);
+          if (!action) {
+            logLine("approval>", "invalid choice. enter 1, 2, 3, or 4.");
+            return true;
+          }
+          replyApproval(action);
+          return true;
+        };
+
         const sendFromInput = () => {
           const raw = payloadInput.value;
           if (!raw.trim()) {
             return;
           }
           const text = raw.trim();
-          pendingInputs.push(text);
           payloadInput.value = "";
           pushInputHistory(text);
           logLine("user>", text);
+          if (handleApprovalInput(text)) {
+            return;
+          }
+          pendingInputs.push(text);
           if (!socket || socket.readyState !== WebSocket.OPEN) {
             connect();
             return;
@@ -896,6 +1033,17 @@
             }
             return;
           }
+          if (
+            obj.id != null &&
+            obj.method &&
+            (obj.method === "item/commandExecution/requestApproval" ||
+              obj.method === "item/fileChange/requestApproval" ||
+              obj.method === "execCommandApproval" ||
+              obj.method === "applyPatchApproval")
+          ) {
+            queueApproval(obj);
+            return;
+          }
           if (obj.method === "item/completed" && obj.params && obj.params.item) {
             const item = obj.params.item;
             if (item.type === "agentMessage" && item.text) {
@@ -929,6 +1077,7 @@
           threadId = null;
           pendingInputs.length = 0;
           endStream();
+          clearApprovals();
         };
 
         const scheduleReconnect = () => {

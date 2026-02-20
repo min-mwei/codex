@@ -25,7 +25,9 @@ use codex_tui::AppExitInfo;
 use codex_tui::Cli as TuiCli;
 use codex_tui::ExitReason;
 use codex_tui::update_action::UpdateAction;
+use codex_utils_cli::ApprovalModeCliArg;
 use codex_utils_cli::CliConfigOverrides;
+use codex_utils_cli::SandboxModeCliArg;
 use owo_colors::OwoColorize;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -615,6 +617,9 @@ async fn cli_main(codex_linux_sandbox_exe: Option<PathBuf>) -> anyhow::Result<()
         }
         Some(Subcommand::AppServer(app_server_cli)) => match app_server_cli.subcommand {
             None => {
+                root_config_overrides
+                    .raw_overrides
+                    .extend(effective_permission_cli_overrides(&interactive));
                 let transport = app_server_cli.listen;
                 codex_app_server::run_main_with_transport(
                     codex_linux_sandbox_exe,
@@ -932,6 +937,44 @@ fn prepend_config_flags(
         .splice(0..0, cli_config_overrides.raw_overrides);
 }
 
+fn effective_permission_cli_overrides(interactive: &TuiCli) -> Vec<String> {
+    let (sandbox_mode, approval_policy) = if interactive.full_auto {
+        (
+            Some(SandboxModeCliArg::WorkspaceWrite),
+            Some(ApprovalModeCliArg::OnRequest),
+        )
+    } else if interactive.dangerously_bypass_approvals_and_sandbox {
+        (
+            Some(SandboxModeCliArg::DangerFullAccess),
+            Some(ApprovalModeCliArg::Never),
+        )
+    } else {
+        (interactive.sandbox_mode, interactive.approval_policy)
+    };
+
+    let mut overrides = Vec::new();
+    if let Some(sandbox_mode) = sandbox_mode {
+        let sandbox_mode = match sandbox_mode {
+            SandboxModeCliArg::ReadOnly => "read-only",
+            SandboxModeCliArg::WorkspaceWrite => "workspace-write",
+            SandboxModeCliArg::DangerFullAccess => "danger-full-access",
+        };
+        overrides.push(format!("sandbox_mode=\"{sandbox_mode}\""));
+    }
+
+    if let Some(approval_policy) = approval_policy {
+        let approval_policy = match approval_policy {
+            ApprovalModeCliArg::Untrusted => "untrusted",
+            ApprovalModeCliArg::OnFailure => "on-failure",
+            ApprovalModeCliArg::OnRequest => "on-request",
+            ApprovalModeCliArg::Never => "never",
+        };
+        overrides.push(format!("approval_policy=\"{approval_policy}\""));
+    }
+
+    overrides
+}
+
 async fn run_interactive_tui(
     mut interactive: TuiCli,
     codex_linux_sandbox_exe: Option<PathBuf>,
@@ -1162,6 +1205,19 @@ mod tests {
             unreachable!()
         };
         app_server
+    }
+
+    fn app_server_permission_overrides_from_args(args: &[&str]) -> Vec<String> {
+        let cli = MultitoolCli::try_parse_from(args).expect("parse");
+        let MultitoolCli {
+            interactive,
+            subcommand,
+            ..
+        } = cli;
+        let Some(Subcommand::AppServer(_)) = subcommand else {
+            panic!("expected app-server subcommand");
+        };
+        effective_permission_cli_overrides(&interactive)
     }
 
     fn sample_exit_info(conversation_id: Option<&str>, thread_name: Option<&str>) -> AppExitInfo {
@@ -1399,6 +1455,39 @@ mod tests {
         let app_server =
             app_server_from_args(["vorpal", "app-server", "--analytics-default-enabled"].as_ref());
         assert!(app_server.analytics_default_enabled);
+    }
+
+    #[test]
+    fn app_server_dangerously_bypass_sets_permission_overrides() {
+        let overrides = app_server_permission_overrides_from_args(
+            [
+                "vorpal",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "app-server",
+            ]
+            .as_ref(),
+        );
+        assert_eq!(
+            overrides,
+            vec![
+                "sandbox_mode=\"danger-full-access\"".to_string(),
+                "approval_policy=\"never\"".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn app_server_full_auto_sets_permission_overrides() {
+        let overrides = app_server_permission_overrides_from_args(
+            ["vorpal", "--full-auto", "app-server"].as_ref(),
+        );
+        assert_eq!(
+            overrides,
+            vec![
+                "sandbox_mode=\"workspace-write\"".to_string(),
+                "approval_policy=\"on-request\"".to_string(),
+            ]
+        );
     }
 
     #[test]
