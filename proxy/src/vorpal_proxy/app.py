@@ -177,6 +177,7 @@ def build_app(config: ProxyConfig) -> FastAPI:
     login_lock = asyncio.Lock()
     login_task = None
     login_output = []
+    login_phase = "idle"
     login_exit_code = None
     login_started_at = None
     login_finished_at = None
@@ -191,14 +192,10 @@ def build_app(config: ProxyConfig) -> FastAPI:
         login_version += 1
 
     def get_login_status():
+        status = login_phase
         if login_task is not None and not login_task.done():
-            status = "running"
-        elif login_exit_code is None:
-            status = "idle"
-        elif login_exit_code == 0:
-            status = "succeeded"
-        else:
-            status = "failed"
+            if login_phase not in {"running", "restarting"}:
+                status = "running"
 
         return {
             "status": status,
@@ -210,12 +207,91 @@ def build_app(config: ProxyConfig) -> FastAPI:
             "output": "\n".join(login_output),
         }
 
+    async def read_text_if_exists(path):
+        try:
+            text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+        except FileNotFoundError:
+            return None
+        except Exception as exc:
+            logger.warning("failed to read file %s: %s", path, exc)
+            return None
+        return text.strip()
+
+    async def write_text(path, content):
+        await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
+        await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+
+    async def app_server_ready_probe():
+        initialize_payload = {
+            "id": "azlogin-restart-probe",
+            "method": "initialize",
+            "params": {"clientInfo": {"name": "vorpal-proxy", "version": "0.1.0"}},
+        }
+        try:
+            async with asyncio.timeout(4):
+                async with websockets.connect(
+                    config.target_url,
+                    compression=None,
+                    max_size=None,
+                    ping_interval=None,
+                ) as server_ws:
+                    await server_ws.send(json.dumps(initialize_payload))
+                    raw_response = await server_ws.recv()
+        except Exception as exc:
+            logger.info("app-server readiness probe failed: %s", exc)
+            return False
+
+        try:
+            response = json.loads(raw_response)
+        except Exception as exc:
+            logger.info("app-server readiness probe response parse failed: %s", exc)
+            return False
+
+        return isinstance(response, dict) and response.get("id") == "azlogin-restart-probe"
+
+    async def restart_app_server_and_wait():
+        request_token = datetime.now(timezone.utc).isoformat()
+        previous_done_token = await read_text_if_exists(config.app_server_restart_done_file)
+        await write_text(config.app_server_restart_request_file, f"{request_token}\n")
+        append_login_output("Requested vorpal app-server restart.")
+        append_login_output("Waiting for restart acknowledgement and backend readiness...")
+        logger.info(
+            "wrote app-server restart request token=%s file=%s",
+            request_token,
+            config.app_server_restart_request_file,
+        )
+
+        deadline = (
+            asyncio.get_running_loop().time() + config.app_server_restart_timeout_seconds
+        )
+        while True:
+            done_token = await read_text_if_exists(config.app_server_restart_done_file)
+            token_acknowledged = done_token == request_token
+            if token_acknowledged and await app_server_ready_probe():
+                append_login_output("vorpal app-server restarted and is ready.")
+                logger.info("app-server restart acknowledged token=%s", request_token)
+                return
+
+            now = asyncio.get_running_loop().time()
+            if now >= deadline:
+                detail = (
+                    f"last_done_token={done_token!r}, previous_done_token={previous_done_token!r}"
+                )
+                raise TimeoutError(
+                    "timed out waiting for app-server restart "
+                    f"(token={request_token}, {detail})"
+                )
+
+            await asyncio.sleep(config.app_server_restart_poll_interval_seconds)
+
     async def run_az_login_device_code():
+        nonlocal login_phase
         nonlocal login_exit_code
         nonlocal login_started_at
         nonlocal login_finished_at
 
         command = ["stdbuf", "-oL", "-eL", "az", "login", "--use-device-code"]
+        login_phase = "running"
         login_started_at = datetime.now(timezone.utc).isoformat()
         login_finished_at = None
         login_exit_code = None
@@ -241,21 +317,38 @@ def build_app(config: ProxyConfig) -> FastAPI:
             append_login_output(line)
             logger.info("startup auth output: %s", line)
 
-        login_exit_code = await process.wait()
-        login_finished_at = datetime.now(timezone.utc).isoformat()
-        if login_exit_code == 0:
+        az_login_exit_code = await process.wait()
+        if az_login_exit_code == 0:
             logger.info("startup auth command succeeded")
             append_login_output("")
             append_login_output("az login completed successfully.")
+            append_login_output("")
+            login_phase = "restarting"
+            try:
+                await restart_app_server_and_wait()
+            except Exception as exc:
+                login_exit_code = 1
+                login_phase = "failed"
+                logger.warning("app-server restart after az login failed: %s", exc)
+                append_login_output("")
+                append_login_output(f"App-server restart failed: {exc}")
+            else:
+                login_exit_code = 0
+                login_phase = "succeeded"
         else:
+            login_exit_code = az_login_exit_code
+            login_phase = "failed"
             logger.warning(
                 "startup auth command failed with exit code %s",
-                login_exit_code,
+                az_login_exit_code,
             )
             append_login_output("")
-            append_login_output(f"az login exited with code {login_exit_code}.")
+            append_login_output(f"az login exited with code {az_login_exit_code}.")
+
+        login_finished_at = datetime.now(timezone.utc).isoformat()
 
     async def ensure_login_running():
+        nonlocal login_phase
         nonlocal login_task
         nonlocal login_exit_code
         nonlocal login_started_at
@@ -266,6 +359,7 @@ def build_app(config: ProxyConfig) -> FastAPI:
             if is_running:
                 return False
             login_output.clear()
+            login_phase = "running"
             login_exit_code = None
             login_started_at = None
             login_finished_at = None
@@ -275,8 +369,10 @@ def build_app(config: ProxyConfig) -> FastAPI:
     @app.on_event("startup")
     async def startup_log():
         logger.info(
-            "proxy app configured: ui=bundled ws->%s",
+            "proxy app configured: ui=bundled ws->%s restart_request=%s restart_done=%s",
             config.target_url,
+            config.app_server_restart_request_file,
+            config.app_server_restart_done_file,
         )
 
     @app.get("/", include_in_schema=False)

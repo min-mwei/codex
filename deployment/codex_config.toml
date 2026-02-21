@@ -1,0 +1,15 @@
+[mcp_servers.icm]
+command = "agency"
+args = ["mcp", "remote", "--url", "https://icmmcpprod-centralus.azurewebsites.net/"]
+
+[mcp_servers.msft-learn]
+command = "agency"
+args = ["mcp", "msft-learn"]
+
+[mcp_servers.ado]
+command = "agency"
+args = ["mcp", "ado", "--organization", "medeina"]
+
+[mcp_servers.security-context]
+command = "agency"
+args = ["mcp", "security-context"]

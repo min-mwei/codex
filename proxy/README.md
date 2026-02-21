@@ -51,6 +51,10 @@ vorpal-proxy \
 
 - `VORPAL_PROXY_TARGET` default: `ws://127.0.0.1:4500`
 - `VORPAL_PROXY_LOG_FILE` default: `vorpal_proxy.log`
+- `VORPAL_APP_SERVER_RESTART_REQUEST_FILE` default: `/tmp/vorpal_app_server.restart`
+- `VORPAL_APP_SERVER_RESTART_DONE_FILE` default: `/tmp/vorpal_app_server.restarted`
+- `VORPAL_APP_SERVER_RESTART_TIMEOUT_SECONDS` default: `45`
+- `VORPAL_APP_SERVER_RESTART_POLL_INTERVAL_SECONDS` default: `0.5`
 
 `vorpal.html` is bundled in the package (`vorpal_proxy/vorpal.html`) and served at `/` and `/vorpal.html`.
 The proxy serves the UI over HTTP and bridges WebSocket traffic to the configured backend.
