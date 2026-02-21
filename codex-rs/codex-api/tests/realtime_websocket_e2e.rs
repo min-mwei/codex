@@ -50,11 +50,10 @@ where
     (addr, server)
 }
 
-fn test_provider() -> Provider {
+fn test_provider(base_url: String) -> Provider {
     Provider {
         name: "test".to_string(),
-        base_url: "http://localhost".to_string(),
-        responses_endpoint: None,
+        base_url,
         query_params: Some(HashMap::new()),
         headers: HeaderMap::new(),
         retry: RetryConfig {
@@ -125,11 +124,10 @@ async fn realtime_ws_e2e_session_create_and_event_flow() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider());
+    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
-                api_url: format!("ws://{addr}"),
                 prompt: "backend prompt".to_string(),
                 session_id: Some("conv_123".to_string()),
             },
@@ -216,11 +214,10 @@ async fn realtime_ws_e2e_send_while_next_event_waits() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider());
+    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
-                api_url: format!("ws://{addr}"),
                 prompt: "backend prompt".to_string(),
                 session_id: Some("conv_123".to_string()),
             },
@@ -278,11 +275,10 @@ async fn realtime_ws_e2e_disconnected_emitted_once() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider());
+    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
-                api_url: format!("ws://{addr}"),
                 prompt: "backend prompt".to_string(),
                 session_id: Some("conv_123".to_string()),
             },
@@ -338,11 +334,10 @@ async fn realtime_ws_e2e_ignores_unknown_text_events() {
     })
     .await;
 
-    let client = RealtimeWebsocketClient::new(test_provider());
+    let client = RealtimeWebsocketClient::new(test_provider(format!("http://{addr}")));
     let connection = client
         .connect(
             RealtimeSessionConfig {
-                api_url: format!("ws://{addr}"),
                 prompt: "backend prompt".to_string(),
                 session_id: Some("conv_123".to_string()),
             },
