@@ -69,7 +69,8 @@ fi
 exec "$real_az" "$@"
 EOF
 
-RUN chmod +x /usr/bin/az
+RUN sed -i 's/\r$//' /usr/bin/az \
+  && chmod +x /usr/bin/az
 
 RUN groupadd --gid 10001 vorpal \
   && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/vorpal --shell /bin/bash vorpal
@@ -93,7 +94,13 @@ RUN python3.13 -m ensurepip --upgrade \
   && python3.13 -m pip install --no-cache-dir --upgrade pip \
   && python3.13 -m pip install --no-cache-dir -r /opt/vorpal/deployment/requirements.txt \
   && python3.13 -m pip install --no-cache-dir /opt/vorpal/proxy \
+  && sed -i 's/\r$//' \
+    /opt/vorpal/deployment/start-vorpal-app-server.sh \
+    /opt/vorpal/deployment/start-vorpal-proxy.sh \
+    /opt/vorpal/deployment/start-services.sh \
   && chmod +x /opt/vorpal/agency/agency \
+  && ln -sf /opt/vorpal/agency/agency /usr/local/bin/agency \
+  && (HOME=/home/vorpal AGENCY_VERBOSITY=error timeout 45s /opt/vorpal/agency/agency mcp ado --organization medeina </dev/null >/tmp/agency-ado-warmup.log 2>&1 || true) \
   && mkdir -p /vorpal_base/context /var/log/vorpal /home/vorpal/.azure \
   && chmod +x \
     /opt/vorpal/deployment/start-vorpal-app-server.sh \

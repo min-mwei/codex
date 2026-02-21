@@ -1,6 +1,7 @@
 [mcp_servers.icm]
 command = "agency"
 args = ["mcp", "remote", "--url", "https://icmmcpprod-centralus.azurewebsites.net/"]
+startup_timeout_sec = 30
 
 [mcp_servers.msft-learn]
 command = "agency"
@@ -9,7 +10,9 @@ args = ["mcp", "msft-learn"]
 [mcp_servers.ado]
 command = "agency"
 args = ["mcp", "ado", "--organization", "medeina"]
+startup_timeout_sec = 30
 
 [mcp_servers.security-context]
 command = "agency"
 args = ["mcp", "security-context"]
+startup_timeout_sec = 30

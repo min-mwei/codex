@@ -284,6 +284,104 @@ def build_app(config: ProxyConfig) -> FastAPI:
 
             await asyncio.sleep(config.app_server_restart_poll_interval_seconds)
 
+    async def run_token_probe(name, command):
+        logger.info("running token probe for %s: %s", name, " ".join(command))
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert process.stdout is not None
+
+        probe_lines = []
+        while True:
+            raw_line = await process.stdout.readline()
+            if not raw_line:
+                break
+            line = raw_line.decode("utf-8", errors="replace").rstrip()
+            probe_lines.append(line)
+            logger.info("token probe %s output: %s", name, line)
+
+        exit_code = await process.wait()
+        if exit_code == 0:
+            append_login_output(f"[token-check] {name}: ok")
+            return True
+
+        append_login_output(f"[token-check] {name}: failed")
+        emitted = 0
+        for line in probe_lines:
+            if (
+                "AADSTS" in line
+                or "Conditional Access" in line
+                or "az login" in line
+                or "access has been blocked" in line.lower()
+            ):
+                append_login_output(f"[token-check] {name}: {line}")
+                emitted += 1
+                if emitted >= 4:
+                    break
+        if emitted == 0 and probe_lines:
+            append_login_output(f"[token-check] {name}: {probe_lines[0]}")
+        return False
+
+    async def run_post_login_token_checks():
+        append_login_output("Running MCP token checks...")
+        checks = [
+            (
+                "ado",
+                [
+                    "az",
+                    "account",
+                    "get-access-token",
+                    "--resource",
+                    "499b84ac-1321-427f-aa17-267ca6975798",
+                    "--output",
+                    "none",
+                ],
+            ),
+            (
+                "icm",
+                [
+                    "az",
+                    "account",
+                    "get-access-token",
+                    "--scope",
+                    "api://icmmcpapi-prod/mcp.tools",
+                    "--output",
+                    "none",
+                ],
+            ),
+            (
+                "security-context",
+                [
+                    "az",
+                    "account",
+                    "get-access-token",
+                    "--scope",
+                    "api://a4a1e66e-9078-4e46-a08f-aab05f5c6f16/access_as_user",
+                    "--output",
+                    "none",
+                ],
+            ),
+        ]
+
+        failed = []
+        for name, command in checks:
+            ok = await run_token_probe(name, command)
+            if not ok:
+                failed.append(name)
+
+        if failed:
+            append_login_output("")
+            append_login_output(
+                "Some MCP token checks failed. /mcp may show 0 tools for: "
+                + ", ".join(failed)
+            )
+            append_login_output(
+                "If failures mention Conditional Access, use host ~/.azure tokens in the container."
+            )
+        append_login_output("")
+
     async def run_az_login_device_code():
         nonlocal login_phase
         nonlocal login_exit_code
@@ -323,6 +421,7 @@ def build_app(config: ProxyConfig) -> FastAPI:
             append_login_output("")
             append_login_output("az login completed successfully.")
             append_login_output("")
+            await run_post_login_token_checks()
             login_phase = "restarting"
             try:
                 await restart_app_server_and_wait()
