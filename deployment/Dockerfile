@@ -87,6 +87,7 @@ COPY deployment/codex_config.toml /vorpal_base/config.toml
 COPY deployment/start-vorpal-app-server.sh /opt/vorpal/deployment/start-vorpal-app-server.sh
 COPY deployment/start-vorpal-proxy.sh /opt/vorpal/deployment/start-vorpal-proxy.sh
 COPY deployment/start-services.sh /opt/vorpal/deployment/start-services.sh
+COPY deployment/entrypoint.sh /opt/vorpal/deployment/entrypoint.sh
 
 # Disabled: interactive installer path is not suitable in image builds.
 # RUN bash -o pipefail -c 'curl -sSfL https://aka.ms/InstallTool.sh | sh -s agency --use-global-feed'
@@ -98,6 +99,7 @@ RUN python3.13 -m ensurepip --upgrade \
     /opt/vorpal/deployment/start-vorpal-app-server.sh \
     /opt/vorpal/deployment/start-vorpal-proxy.sh \
     /opt/vorpal/deployment/start-services.sh \
+    /opt/vorpal/deployment/entrypoint.sh \
   && chmod +x /opt/vorpal/agency/agency \
   && ln -sf /opt/vorpal/agency/agency /usr/local/bin/agency \
   && (HOME=/home/vorpal AGENCY_VERBOSITY=error timeout 45s /opt/vorpal/agency/agency mcp ado --organization medeina </dev/null >/tmp/agency-ado-warmup.log 2>&1 || true) \
@@ -106,11 +108,17 @@ RUN python3.13 -m ensurepip --upgrade \
     /opt/vorpal/deployment/start-vorpal-app-server.sh \
     /opt/vorpal/deployment/start-vorpal-proxy.sh \
     /opt/vorpal/deployment/start-services.sh \
+    /opt/vorpal/deployment/entrypoint.sh \
     /usr/local/bin/vorpal \
-  && chown -R vorpal:vorpal /opt/vorpal /vorpal_base /var/log/vorpal /home/vorpal /usr/local/bin/vorpal
+  && chown -R vorpal:vorpal /vorpal_base /var/log/vorpal /home/vorpal \
+  && chmod -R a+rX /opt/vorpal /usr/local/bin/vorpal \
+  && for dir in /home/vorpal/.agency /home/vorpal/.npm; do \
+    [ -e "$dir" ] && chmod -R a+rX "$dir"; \
+  done
 
 USER vorpal
 
 EXPOSE 8000
 
+ENTRYPOINT ["/opt/vorpal/deployment/entrypoint.sh"]
 CMD ["/opt/vorpal/deployment/start-services.sh"]

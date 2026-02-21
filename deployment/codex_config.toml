@@ -1,5 +1,5 @@
 [mcp_servers.icm]
-enabled = false
+enabled = true
 command = "agency"
 args = ["mcp", "remote", "--url", "https://icmmcpprod-centralus.azurewebsites.net/"]
 startup_timeout_sec = 30
@@ -14,7 +14,7 @@ args = ["mcp", "ado", "--organization", "medeina"]
 startup_timeout_sec = 30
 
 [mcp_servers.security-context]
-enabled = false
+enabled = true
 command = "agency"
 args = ["mcp", "security-context"]
 startup_timeout_sec = 30
