@@ -23,6 +23,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && apt-get install -y --no-install-recommends \
   python3.13 \
   python3.13-venv \
+  && ln -sf /usr/bin/python3.13 /usr/local/bin/python \
+  && ln -sf /usr/bin/python3.13 /usr/local/bin/python3 \
   && mkdir -p /etc/apt/keyrings \
   && curl -sLS https://packages.microsoft.com/keys/microsoft.asc \
     | gpg --dearmor -o /etc/apt/keyrings/microsoft.gpg \
