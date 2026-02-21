@@ -3,7 +3,7 @@
 ## Goal
 Always keep `https://github.com/min-mwei/codex.git` branch `dev` up to date with `origin/main` from `https://github.com/openai/codex.git`.
 
-## Remote Setup (run once)
+## Remote Setup (idempotent; safe to run anytime)
 ```bash
 git remote set-url origin https://github.com/openai/codex.git
 git remote add fork https://github.com/min-mwei/codex.git 2>/dev/null || true
@@ -14,6 +14,9 @@ git remote -v
 Expected:
 - `origin` -> `https://github.com/openai/codex.git`
 - `fork` -> `https://github.com/min-mwei/codex.git`
+
+If `git push fork ...` fails with `fatal: 'fork' does not appear to be a git repository`,
+run this setup block again and retry.
 
 ## Standard Sync + Merge + Push
 Run from repo root:
@@ -42,7 +45,7 @@ The SHA shown for `refs/heads/dev` on `fork` should match your local `dev` HEAD.
    ```
 3. Complete merge commit:
    ```bash
-   git commit
+   git commit --no-edit
    ```
 4. Push again:
    ```bash
