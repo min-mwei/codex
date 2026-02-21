@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cobalt"
+  short_description: "Dynamic App pentest against a live service"
+  default_prompt: "Run a lightweight pentest against a deployed webapp target URL (such as DVWA), reuse invictus OWASP hints, and report mapped findings with evidence and remediation."

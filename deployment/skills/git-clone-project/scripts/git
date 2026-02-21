@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prefer Linux-native git when available.
+for candidate in /usr/bin/git /usr/local/bin/git /bin/git; do
+  if [[ -x "${candidate}" ]]; then
+    exec "${candidate}" "$@"
+  fi
+done
+
+# WSL fallback for environments where git is provided by Git for Windows.
+if command -v git.exe >/dev/null 2>&1; then
+  exec "$(command -v git.exe)" "$@"
+fi
+
+windows_git="/mnt/c/Program Files/Git/cmd/git.exe"
+if [[ -x "${windows_git}" ]]; then
+  exec "${windows_git}" "$@"
+fi
+
+echo "Error: no usable git executable found." >&2
+exit 127

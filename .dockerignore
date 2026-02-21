@@ -1,0 +1,9 @@
+*
+
+!proxy
+!proxy/**
+!deployment
+!deployment/**
+!codex-rs/target
+!codex-rs/target/release
+!codex-rs/target/release/vorpal

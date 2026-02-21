@@ -1,0 +1,14 @@
+# General Python tooling and common runtime libraries for interactive coding tasks.
+ipython==9.6.0
+pytest==8.4.2
+black==25.9.0
+ruff==0.14.3
+mypy==1.18.2
+requests==2.32.5
+httpx==0.28.1
+pydantic==2.12.3
+fastapi==0.121.0
+uvicorn==0.38.0
+websockets==15.0.1
+numpy==2.3.4
+pandas==2.3.3

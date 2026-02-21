@@ -705,12 +705,12 @@
 
         const defaultWsUrl = (() => {
           if (window.location && window.location.protocol === "https:") {
-            return `wss://${window.location.host}`;
+            return `wss://${window.location.host}/cli`;
           }
           if (window.location && window.location.protocol === "http:") {
-            return `ws://${window.location.host}`;
+            return `ws://${window.location.host}/cli`;
           }
-          return "ws://localhost:4501";
+          return "ws://localhost:8000/cli";
         })();
 
         const wsUrl = defaultWsUrl;

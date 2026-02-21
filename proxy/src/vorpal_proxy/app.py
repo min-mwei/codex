@@ -1,11 +1,12 @@
 import asyncio
+from datetime import datetime, timezone
 from importlib.resources import files
 import json
 import logging
 import sys
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 import websockets
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
 
@@ -173,7 +174,103 @@ async def handler(client_ws, *, target_url, logger):
 def build_app(config: ProxyConfig) -> FastAPI:
     logger = setup_logger(config.log_file)
     ui_html = load_ui(logger)
+    login_lock = asyncio.Lock()
+    login_task = None
+    login_output = []
+    login_exit_code = None
+    login_started_at = None
+    login_finished_at = None
+    login_version = 0
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+
+    def append_login_output(line):
+        nonlocal login_version
+        login_output.append(line)
+        if len(login_output) > 400:
+            del login_output[:-400]
+        login_version += 1
+
+    def get_login_status():
+        if login_task is not None and not login_task.done():
+            status = "running"
+        elif login_exit_code is None:
+            status = "idle"
+        elif login_exit_code == 0:
+            status = "succeeded"
+        else:
+            status = "failed"
+
+        return {
+            "status": status,
+            "complete": status in {"succeeded", "failed"},
+            "exitCode": login_exit_code,
+            "startedAt": login_started_at,
+            "finishedAt": login_finished_at,
+            "version": login_version,
+            "output": "\n".join(login_output),
+        }
+
+    async def run_az_login_device_code():
+        nonlocal login_exit_code
+        nonlocal login_started_at
+        nonlocal login_finished_at
+
+        command = ["stdbuf", "-oL", "-eL", "az", "login", "--use-device-code"]
+        login_started_at = datetime.now(timezone.utc).isoformat()
+        login_finished_at = None
+        login_exit_code = None
+        logger.info("running startup auth command: %s", " ".join(command))
+        append_login_output("$ az login --use-device-code")
+        append_login_output("")
+        append_login_output(
+            "Waiting for completion. Use a separate browser window for https://microsoft.com/devicelogin when code is shown."
+        )
+        append_login_output("")
+
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        assert process.stdout is not None
+        while True:
+            raw_line = await process.stdout.readline()
+            if not raw_line:
+                break
+            line = raw_line.decode("utf-8", errors="replace").rstrip()
+            append_login_output(line)
+            logger.info("startup auth output: %s", line)
+
+        login_exit_code = await process.wait()
+        login_finished_at = datetime.now(timezone.utc).isoformat()
+        if login_exit_code == 0:
+            logger.info("startup auth command succeeded")
+            append_login_output("")
+            append_login_output("az login completed successfully.")
+        else:
+            logger.warning(
+                "startup auth command failed with exit code %s",
+                login_exit_code,
+            )
+            append_login_output("")
+            append_login_output(f"az login exited with code {login_exit_code}.")
+
+    async def ensure_login_running():
+        nonlocal login_task
+        nonlocal login_exit_code
+        nonlocal login_started_at
+        nonlocal login_finished_at
+
+        async with login_lock:
+            is_running = login_task is not None and not login_task.done()
+            if is_running:
+                return False
+            login_output.clear()
+            login_exit_code = None
+            login_started_at = None
+            login_finished_at = None
+            login_task = asyncio.create_task(run_az_login_device_code())
+            return True
 
     @app.on_event("startup")
     async def startup_log():
@@ -184,10 +281,100 @@ def build_app(config: ProxyConfig) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     async def index():
+        return HTMLResponse(
+            (
+                "<!doctype html><title>Vorpal Startup</title>"
+                "<h1>Vorpal Proxy Startup</h1>"
+                "<p><a href=\"/azlogin\">Run az login --use-device-code</a></p>"
+                "<p><a href=\"/cli\">Open Vorpal CLI proxy UI</a></p>"
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/azlogin", include_in_schema=False)
+    async def azlogin_page():
+        await ensure_login_running()
+        return HTMLResponse(
+            (
+                "<!doctype html><title>Vorpal Azure Login</title>"
+                "<meta charset='utf-8'>"
+                "<style>"
+                "body{font-family:ui-monospace,Menlo,Consolas,monospace;padding:16px;line-height:1.4;user-select:text;-webkit-user-select:text;}"
+                "#status{font-weight:700;margin-bottom:8px;}"
+                "pre{white-space:pre-wrap;background:#111;color:#eee;padding:12px;border-radius:6px;min-height:220px;user-select:text;-webkit-user-select:text;cursor:text;}"
+                "a{color:#0a66c2;}"
+                "</style>"
+                "<h1>Azure Device Login</h1>"
+                "<div id='status'>starting...</div>"
+                "<p>Use a separate browser window for <a href='https://microsoft.com/devicelogin' target='_blank' rel='noreferrer'>https://microsoft.com/devicelogin</a>.</p>"
+                "<pre id='output'>(waiting for az output)</pre>"
+                "<script>"
+                "const statusEl=document.getElementById('status');"
+                "const outEl=document.getElementById('output');"
+                "let done=false;"
+                "let redirected=false;"
+                "async function tick(){"
+                " try{"
+                "  const r=await fetch('/azlogin/status',{cache:'no-store'});"
+                "  const s=await r.json();"
+                "  statusEl.textContent='status: '+s.status+(s.exitCode!==null?' (exitCode='+s.exitCode+')':'');"
+                "  const sel=window.getSelection();"
+                "  const hasSelection=sel&&sel.toString().length>0;"
+                "  if(!hasSelection){"
+                "   outEl.textContent=s.output||'(waiting for az output)';"
+                "  }"
+                "  if(s.complete&&s.status==='succeeded'&&!redirected){"
+                "   redirected=true;"
+                "   statusEl.textContent='status: succeeded (redirecting to /cli...)';"
+                "   setTimeout(()=>window.location.assign('/cli'),700);"
+                "   done=true;"
+                "  }else if(s.complete){done=true;}"
+                " }catch(e){statusEl.textContent='status: polling failed';}"
+                " if(!done){setTimeout(tick,1000);}"
+                "}"
+                "tick();"
+                "</script>"
+            ),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post("/azlogin", include_in_schema=False)
+    async def azlogin_start():
+        started_now = await ensure_login_running()
+        status = get_login_status()
+        message = "started" if started_now else "already running"
+        return JSONResponse(
+            {
+                "message": message,
+                "status": status["status"],
+                "startedAt": status["startedAt"],
+            },
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/azlogin/status", include_in_schema=False)
+    async def azlogin_status():
+        return JSONResponse(
+            get_login_status(),
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/azlogin/raw", include_in_schema=False)
+    async def azlogin_raw():
+        await ensure_login_running()
+        return PlainTextResponse(
+            get_login_status().get("output", ""),
+            status_code=200,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.get("/cli", include_in_schema=False)
+    @app.get("/cli/", include_in_schema=False)
+    async def cli_index():
         return HTMLResponse(ui_html, headers={"Cache-Control": "no-store"})
 
-    @app.get("/vorpal.html", include_in_schema=False)
-    async def vorpal_html():
+    @app.get("/cli/vorpal.html", include_in_schema=False)
+    async def cli_vorpal_html():
         return HTMLResponse(ui_html, headers={"Cache-Control": "no-store"})
 
     @app.get("/{path:path}", include_in_schema=False)
@@ -199,8 +386,8 @@ def build_app(config: ProxyConfig) -> FastAPI:
             headers={"Cache-Control": "no-store"},
         )
 
-    @app.websocket("/")
-    async def websocket_root(client_ws: WebSocket):
+    @app.websocket("/cli")
+    async def websocket_cli(client_ws: WebSocket):
         await client_ws.accept()
         await handler(client_ws, target_url=config.target_url, logger=logger)
 

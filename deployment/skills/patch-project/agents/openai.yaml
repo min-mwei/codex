@@ -1,0 +1,4 @@
+interface:
+  display_name: "Patch Project"
+  short_description: "Generate review patches from Ultraviolet/Cobalt findings."
+  default_prompt: "Generate review-ready code patches for a project under /vorpal_base/context using vulnerability findings from ultraviolet and cobalt, prioritizing high-risk fixes and preserving source attribution."

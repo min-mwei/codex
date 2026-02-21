@@ -1,0 +1,4 @@
+interface:
+  display_name: "Autobahn"
+  short_description: "Deploy Applicationd and Agents to production"
+  default_prompt: "Deploy a Dockerized project under /vorpal_base/context to local Docker by reading project instructions, finding Dockerfile/build hints, building the image, and running the container."

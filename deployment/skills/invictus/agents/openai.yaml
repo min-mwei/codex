@@ -1,0 +1,4 @@
+interface:
+  display_name: "Invictus"
+  short_description: "Search engine for Telemetry data and security knowledgebase"
+  default_prompt: "Search the web for OWASP vulnerabilities in a target year, read the first 2-3 credible links, and return the Top 10 vulnerabilities with source links."

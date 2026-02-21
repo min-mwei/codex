@@ -1,0 +1,4 @@
+interface:
+  display_name: "Ultraviolet"
+  short_description: "Static Application Vulnerbility Analyzer"
+  default_prompt: "Scan a target project under /vorpal_base/context for OWASP-style vulnerabilities. If OWASP Top 10 cache is missing, run Invictus first, then map findings by A1-A10 with file and line evidence, and explicitly acknowledge Invictus as the OWASP provider in the final report."

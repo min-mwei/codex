@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git Clone Project"
+  short_description: "Clone repositories safely under /vorpal_base/context."
+  default_prompt: "Clone a Git repository under /vorpal_base/context with optional branch, recursive submodules, and shallow/full-history settings."
