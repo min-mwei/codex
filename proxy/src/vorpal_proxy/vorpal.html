@@ -419,6 +419,7 @@
         let threadId = null;
         let initRequested = false;
         let initialized = false;
+        let initializedNotificationSent = false;
         let initRequestId = null;
         let threadRequested = false;
         let threadRequestId = null;
@@ -443,6 +444,10 @@
         const approvalQueue = [];
         let activeApproval = null;
         const turnRequestIds = new Set();
+        const mcpListRequestIds = new Set();
+        const skillsListRequestIds = new Set();
+        const pendingMcpListCommands = [];
+        const pendingSkillsListCommands = [];
         const activeItemById = new Map();
         let activeTurnId = null;
         let turnRequestInFlight = false;
@@ -1083,6 +1088,208 @@
           }
         };
 
+        const isMcpListSlashCommand = (text) => {
+          const normalized = String(text || "")
+            .trim()
+            .toLowerCase();
+          return normalized === "/mcp" || normalized === "/mcp list";
+        };
+
+        const isMcpSlashCommand = (text) =>
+          String(text || "")
+            .trim()
+            .toLowerCase()
+            .startsWith("/mcp");
+
+        const isSkillsListSlashCommand = (text) => {
+          const normalized = String(text || "")
+            .trim()
+            .toLowerCase();
+          return normalized === "/skills" || normalized === "/skills list";
+        };
+
+        const isSkillsSlashCommand = (text) =>
+          String(text || "")
+            .trim()
+            .toLowerCase()
+            .startsWith("/skills");
+
+        const printMcpListResult = (result) => {
+          const data = result && Array.isArray(result.data) ? result.data : [];
+          if (!data.length) {
+            logLine("mcp>", "no MCP servers configured.");
+            return;
+          }
+          const sorted = [...data].sort((left, right) =>
+            String(left && left.name ? left.name : "").localeCompare(String(right && right.name ? right.name : "")),
+          );
+          for (const server of sorted) {
+            const serverName = server && server.name ? server.name : "unknown";
+            const authStatus = server && server.authStatus ? server.authStatus : "unknown";
+            const tools = server && server.tools && typeof server.tools === "object" ? server.tools : {};
+            const toolNames = Object.keys(tools).sort((left, right) => left.localeCompare(right));
+            logLine("mcp>", `${serverName} (${toolNames.length} tools, auth=${authStatus})`);
+            if (!toolNames.length) {
+              logLine("mcp>", "  - (no tools)");
+              continue;
+            }
+            toolNames.forEach((toolName) => logLine("mcp>", `  - ${toolName}`));
+          }
+          if (result && result.nextCursor) {
+            logLine("mcp>", "additional MCP servers are available (nextCursor present).");
+          }
+        };
+
+        const skillSummary = (skill) => {
+          if (!skill || typeof skill !== "object") {
+            return "unknown";
+          }
+          const canonicalName = skill.name ? String(skill.name) : "unknown";
+          const displayName =
+            skill.interface && skill.interface.displayName ? String(skill.interface.displayName) : canonicalName;
+          const scope = skill.scope ? String(skill.scope) : "unknown";
+          const enabled = skill.enabled === false ? "disabled" : "enabled";
+          const shortDescription =
+            (skill.interface && skill.interface.shortDescription
+              ? String(skill.interface.shortDescription)
+              : skill.shortDescription
+                ? String(skill.shortDescription)
+                : "") || "";
+
+          const namePart = displayName === canonicalName ? canonicalName : `${displayName} (${canonicalName})`;
+          const detailPart = shortDescription ? ` - ${shortDescription}` : "";
+          return `${namePart} [${scope}, ${enabled}]${detailPart}`;
+        };
+
+        const printSkillsListResult = (result) => {
+          const data = result && Array.isArray(result.data) ? result.data : [];
+          if (!data.length) {
+            logLine("skills>", "no skills found.");
+            return;
+          }
+          const entries = [...data].sort((left, right) =>
+            String(left && left.cwd ? left.cwd : "").localeCompare(String(right && right.cwd ? right.cwd : "")),
+          );
+          for (const entry of entries) {
+            const cwd = entry && entry.cwd ? String(entry.cwd) : "(unknown cwd)";
+            const skills = entry && Array.isArray(entry.skills) ? entry.skills : [];
+            const errors = entry && Array.isArray(entry.errors) ? entry.errors : [];
+            logLine(
+              "skills>",
+              `${cwd} (${skills.length} skill${skills.length === 1 ? "" : "s"}, ${errors.length} error${
+                errors.length === 1 ? "" : "s"
+              })`,
+            );
+
+            if (!skills.length) {
+              logLine("skills>", "  - (no skills)");
+            } else {
+              const sortedSkills = [...skills].sort((left, right) =>
+                skillSummary(left).localeCompare(skillSummary(right)),
+              );
+              for (const skill of sortedSkills) {
+                logLine("skills>", `  - ${skillSummary(skill)}`);
+              }
+            }
+
+            for (const error of errors) {
+              const path = error && error.path ? String(error.path) : "(unknown path)";
+              const message = error && error.message ? String(error.message) : "unknown error";
+              logLine("skills>", `  ! ${path}: ${message}`);
+            }
+          }
+        };
+
+        const flushMcpListCommands = () => {
+          if (!pendingMcpListCommands.length) {
+            return;
+          }
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            return;
+          }
+          ensureSession();
+          if (!initialized) {
+            return;
+          }
+          while (pendingMcpListCommands.length) {
+            pendingMcpListCommands.shift();
+            const requestId = nextId++;
+            mcpListRequestIds.add(requestId);
+            sendJson({
+              id: requestId,
+              method: "mcpServerStatus/list",
+              params: { limit: 100 },
+            });
+          }
+        };
+
+        const queueMcpListCommand = () => {
+          pendingMcpListCommands.push({ kind: "list" });
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            connect();
+            return;
+          }
+          ensureSession();
+          flushMcpListCommands();
+        };
+
+        const flushSkillsListCommands = () => {
+          if (!pendingSkillsListCommands.length) {
+            return;
+          }
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            return;
+          }
+          ensureSession();
+          if (!initialized) {
+            return;
+          }
+          while (pendingSkillsListCommands.length) {
+            pendingSkillsListCommands.shift();
+            const requestId = nextId++;
+            skillsListRequestIds.add(requestId);
+            sendJson({
+              id: requestId,
+              method: "skills/list",
+              params: { forceReload: false },
+            });
+          }
+        };
+
+        const queueSkillsListCommand = () => {
+          pendingSkillsListCommands.push({ kind: "list" });
+          if (!socket || socket.readyState !== WebSocket.OPEN) {
+            connect();
+            return;
+          }
+          ensureSession();
+          flushSkillsListCommands();
+        };
+
+        const handleLocalSlashCommand = (text) => {
+          if (isMcpSlashCommand(text)) {
+            if (!isMcpListSlashCommand(text)) {
+              logLine("mcp>", "usage: /mcp or /mcp list");
+              return true;
+            }
+            logLine("mcp>", "requesting MCP tools...");
+            queueMcpListCommand();
+            return true;
+          }
+
+          if (isSkillsSlashCommand(text)) {
+            if (!isSkillsListSlashCommand(text)) {
+              logLine("skills>", "usage: /skills or /skills list");
+              return true;
+            }
+            logLine("skills>", "requesting skills...");
+            queueSkillsListCommand();
+            return true;
+          }
+
+          return false;
+        };
+
         const isLegacyApprovalMethod = (method) =>
           method === "execCommandApproval" || method === "applyPatchApproval";
 
@@ -1231,6 +1438,9 @@
           if (handleApprovalInput(text)) {
             return;
           }
+          if (handleLocalSlashCommand(text)) {
+            return;
+          }
           pendingInputs.push(text);
           refreshStatus();
           if (!socket || socket.readyState !== WebSocket.OPEN) {
@@ -1259,7 +1469,11 @@
             initRequestId = nextId;
             sendJson(defaultInit());
           }
-          if (initialized && !threadRequested) {
+          if (initialized && !initializedNotificationSent) {
+            initializedNotificationSent = true;
+            sendJson({ method: "initialized" });
+          }
+          if (initialized && initializedNotificationSent && !threadRequested) {
             threadRequested = true;
             threadRequestId = nextId;
             sendJson({ id: nextId++, method: "thread/start", params: {} });
@@ -1417,12 +1631,34 @@
             initialized = true;
             logSystem("**", "initialized");
             ensureSession();
+            flushMcpListCommands();
+            flushSkillsListCommands();
             return;
           }
           if (obj.id && obj.id === initRequestId && isAlreadyInitializedError(obj)) {
             initialized = true;
             logSystem("**", "already initialized");
             ensureSession();
+            flushMcpListCommands();
+            flushSkillsListCommands();
+            return;
+          }
+          if (obj.id != null && mcpListRequestIds.has(obj.id)) {
+            mcpListRequestIds.delete(obj.id);
+            if (obj.error && obj.error.message) {
+              logLine("error", `mcp list failed: ${obj.error.message}`);
+              return;
+            }
+            printMcpListResult(obj.result || {});
+            return;
+          }
+          if (obj.id != null && skillsListRequestIds.has(obj.id)) {
+            skillsListRequestIds.delete(obj.id);
+            if (obj.error && obj.error.message) {
+              logLine("error", `skills list failed: ${obj.error.message}`);
+              return;
+            }
+            printSkillsListResult(obj.result || {});
             return;
           }
           if (obj.id != null && turnRequestIds.has(obj.id)) {
@@ -1542,11 +1778,16 @@
         const resetSessionState = () => {
           initRequested = false;
           initialized = false;
+          initializedNotificationSent = false;
           initRequestId = null;
           threadRequested = false;
           threadRequestId = null;
           threadId = null;
           pendingInputs.length = 0;
+          pendingMcpListCommands.length = 0;
+          pendingSkillsListCommands.length = 0;
+          mcpListRequestIds.clear();
+          skillsListRequestIds.clear();
           turnRequestIds.clear();
           turnRequestInFlight = false;
           activeTurnId = null;
@@ -1579,6 +1820,8 @@
             setTransportState("connected");
             logSystem("--", "connected");
             ensureSession();
+            flushMcpListCommands();
+            flushSkillsListCommands();
             flushInputs();
           });
 
